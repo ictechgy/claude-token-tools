@@ -61,7 +61,7 @@ claude-token-delegate ask --provider codex --prompt "Find the likely files to in
 claude-token-delegate disable
 ```
 
-Only delegate context you are allowed to share with that external provider. The helper prints a bounded preview to Claude and saves the full auxiliary response locally.
+Only delegate context you are allowed to share with that external provider. The helper prints a bounded, untrusted preview to Claude and saves the full untrusted auxiliary response locally.
 
 
-Delegation blocks obvious secret-like context paths by default and creates a private `.gitignore` under `.claude-token-optimizer/` for saved responses. Use `--allow-sensitive-context` only when your policy allows sending that file to the selected provider.
+Delegation allows project-root context files by default and blocks outside-project paths, obvious secret-like paths, and credential-like file contents. If policy review approves sharing a blocked file with the selected provider, allow only that exact path. Saved responses are written under `.claude-token-optimizer/` with private file permissions and a private `.gitignore`.
