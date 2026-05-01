@@ -3,7 +3,7 @@
   "effortLevel": "medium",
   "statusLine": {
     "type": "command",
-    "command": "bash claude-token-kit/statusline.sh"
+    "command": "claude-token-statusline"
   },
   "permissions": {
     "deny": [
@@ -24,7 +24,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 claude-token-kit/rewrite_bash_for_token_budget.py"
+            "command": "claude-token-rewrite-bash"
           }
         ]
       }

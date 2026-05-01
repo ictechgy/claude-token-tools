@@ -37,7 +37,6 @@ def main() -> int:
     parser.add_argument("--head-lines", type=int, default=40)
     parser.add_argument("--tail-lines", type=int, default=80)
     parser.add_argument("--error-lines", type=int, default=120)
-    parser.add_argument("--", dest="dashdash", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
 

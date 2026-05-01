@@ -1,6 +1,7 @@
 # Local orchestration/runtime state
 .omx/
 .claude-token-optimizer/
+.serena/
 
 # Python
 __pycache__/

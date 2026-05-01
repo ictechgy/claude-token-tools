@@ -3,6 +3,11 @@ set -euo pipefail
 
 input=$(cat)
 
+if ! command -v jq >/dev/null 2>&1; then
+  echo "[needs-jq] install jq for Claude token statusline"
+  exit 0
+fi
+
 jq_get() {
   jq -r "$1 // empty" <<<"$input" 2>/dev/null || true
 }

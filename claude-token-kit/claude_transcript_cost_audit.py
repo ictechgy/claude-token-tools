@@ -22,7 +22,7 @@ TOKEN_KEYS = {
     "cacheCreation": "cache_creation",
     "cacheRead": "cache_read",
 }
-COST_KEYS = {"cost_usd", "total_cost_usd", "costUSD"}
+COST_KEYS = ("total_cost_usd", "cost_usd", "costUSD")
 MODEL_KEYS = {"model", "model_id", "modelId"}
 QUERY_SOURCE_KEYS = {"query_source", "querySource"}
 
@@ -48,6 +48,7 @@ def iter_jsonl_files(paths: Iterable[str]) -> Iterable[Path]:
             yield path
         elif path.is_dir():
             yield from path.rglob("*.jsonl")
+            yield from path.rglob("*.json")
 
 
 def walk(obj: Any) -> Iterable[dict[str, Any]]:
@@ -91,10 +92,14 @@ def add_usage(summary: UsageSummary, root: Any) -> None:
         # OpenTelemetry-style records sometimes use {name, value, attributes.type}.
         name = d.get("name") or d.get("metric")
         if name == "claude_code.token.usage":
-            value = d.get("value") or d.get("sum") or d.get("count")
+            value = d.get("value")
+            if value is None:
+                value = d.get("sum")
+            if value is None:
+                value = d.get("count")
             attrs = d.get("attributes") or {}
             token_type = attrs.get("type", "unknown") if isinstance(attrs, dict) else "unknown"
-            if isinstance(value, (int, float)):
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
                 local_tokens[str(token_type)] += int(value)
 
         if local_tokens:
@@ -110,6 +115,7 @@ def add_usage(summary: UsageSummary, root: Any) -> None:
                 continue
             if isinstance(val, (int, float)):
                 summary.cost_usd += float(val)
+                break
 
 
 def scan(paths: list[str]) -> UsageSummary:
