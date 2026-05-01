@@ -1,0 +1,16 @@
+{
+  "name": "claude-token-optimizer",
+  "description": "Claude Code token reduction skills and local helper commands for context hygiene, usage auditing, and output trimming.",
+  "author": {
+    "name": "jinhongan"
+  },
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "tokens",
+    "cost",
+    "context",
+    "statusline",
+    "hooks"
+  ]
+}

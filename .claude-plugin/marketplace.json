@@ -1,0 +1,28 @@
+{
+  "name": "claude-token-tools",
+  "description": "Marketplace for Claude Code token and context reduction tools.",
+  "owner": {
+    "name": "jinhongan"
+  },
+  "plugins": [
+    {
+      "name": "claude-token-optimizer",
+      "source": "./plugins/claude-token-optimizer",
+      "description": "Skills and local helper commands for reducing Claude Code token usage, context bloat, and noisy tool output.",
+      "license": "MIT",
+      "keywords": [
+        "claude-code",
+        "tokens",
+        "cost",
+        "context",
+        "hooks"
+      ],
+      "category": "developer-tools",
+      "tags": [
+        "token-optimization",
+        "cost-management",
+        "context-management"
+      ]
+    }
+  ]
+}

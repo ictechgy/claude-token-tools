@@ -1,0 +1,35 @@
+# Local orchestration/runtime state
+.omx/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs and temporary outputs
+*.log
+tmp/
+*.tmp
+
+# Build/package outputs
+dist/
+build/
+coverage/
+node_modules/
