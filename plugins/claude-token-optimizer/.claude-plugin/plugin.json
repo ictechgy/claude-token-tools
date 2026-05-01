@@ -16,5 +16,6 @@
     "codex",
     "auxiliary-ai",
     "delegation"
-  ]
+  ],
+  "version": "0.1.0"
 }

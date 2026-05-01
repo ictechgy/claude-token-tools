@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ -t 0 ]]; then
+  echo "usage: pass Claude Code statusline JSON on stdin"
+  exit 0
+fi
+
 input=$(cat)
 
 if ! command -v jq >/dev/null 2>&1; then

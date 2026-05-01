@@ -1,6 +1,7 @@
 ---
 description: Diagnose and reduce Claude Code token usage for a project or session using context hygiene, model and effort routing, MCP minimization, output trimming, subagent discipline, and measurement. Use when the user asks to lower Claude Code token usage, cost, context bloat, or usage-limit burn.
 argument-hint: [project/session symptoms]
+allowed-tools: Bash(claude-token-audit *), Bash(claude-trim-output *), Bash(claude-token-statusline)
 ---
 
 # Claude Token Optimizer

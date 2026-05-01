@@ -28,7 +28,8 @@
         "auxiliary-ai",
         "gemini",
         "codex"
-      ]
+      ],
+      "version": "0.1.0"
     }
   ]
 }

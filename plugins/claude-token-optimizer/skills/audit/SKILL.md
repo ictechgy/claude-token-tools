@@ -14,10 +14,14 @@ Default command:
 claude-token-audit ~/.claude/projects --top 20
 ```
 
-If the user supplies a path, audit that path instead:
+If the user supplies a path, audit that path instead. If no path is supplied, keep the default Claude projects path:
 
 ```bash
-claude-token-audit "$ARGUMENTS" --top 20
+if [ -n "$ARGUMENTS" ]; then
+  claude-token-audit "$ARGUMENTS" --top 20
+else
+  claude-token-audit ~/.claude/projects --top 20
+fi
 ```
 
 Report:

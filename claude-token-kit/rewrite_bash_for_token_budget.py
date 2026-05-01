@@ -20,7 +20,7 @@ SHELL_META_RE = re.compile(r"[;&|<>`$()\n]")
 WRAPPER_MARKERS = ("trim_command_output.py", "claude-trim-output")
 
 
-def find_wrapper() -> str:
+def find_wrapper() -> str | None:
     script_dir = os.path.dirname(os.path.abspath(__file__))
     candidates = [
         os.path.join(script_dir, "claude-trim-output"),
@@ -35,7 +35,7 @@ def find_wrapper() -> str:
                 return path
         elif shutil.which(path):
             return path
-    return candidates[1]
+    return None
 
 
 def split_single_safe_command(command: str) -> list[str] | None:
@@ -52,24 +52,31 @@ def is_noisy_command(argv: list[str]) -> bool:
     if not argv:
         return False
     first = argv[0]
-    second = argv[1] if len(argv) > 1 else ""
-    third = argv[2] if len(argv) > 2 else ""
+    rest = argv[1:]
 
     if first in {"npm", "pnpm", "yarn", "bun"}:
-        return second == "test" or (second == "run" and third in {"test", "build", "lint"})
-    if first == "pytest":
+        if "test" in rest:
+            return True
+        if "run" in rest:
+            run_index = rest.index("run")
+            scripts = rest[run_index + 1 :]
+            return any(script == "build" or script == "lint" or script.startswith("test") for script in scripts)
+        return any(arg in {"build", "lint"} for arg in rest)
+    if first in {"pytest", "tox", "jest", "vitest"}:
         return True
-    if first == "python" and len(argv) > 2 and argv[1:3] == ["-m", "pytest"]:
+    if first == "npx" and any(arg in {"jest", "vitest"} for arg in rest):
         return True
-    if first == "go" and second == "test":
+    if first == "python" and len(argv) > 2 and argv[1] == "-m" and argv[2] in {"pytest", "unittest"}:
         return True
-    if first == "cargo" and second == "test":
+    if first == "go" and "test" in rest:
         return True
-    if first == "mvn" and second == "test":
+    if first == "cargo" and "test" in rest:
         return True
-    if first in {"gradle", "./gradlew"} and second == "test":
+    if first in {"mvn", "mvnw", "./mvnw"} and "test" in rest:
         return True
-    if first == "make" and second in {"test", "build", "lint"}:
+    if first in {"gradle", "gradlew", "./gradlew"} and "test" in rest:
+        return True
+    if first == "make" and any(arg in {"test", "build", "lint"} for arg in rest):
         return True
     return False
 
@@ -86,7 +93,8 @@ def build_wrapped_command(wrapper: str, argv: list[str]) -> str:
 def main() -> int:
     try:
         payload = json.load(sys.stdin)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
+        print(f"claude-token-rewrite-bash: invalid hook JSON: {exc}", file=sys.stderr)
         print("{}")
         return 0
 
@@ -103,6 +111,10 @@ def main() -> int:
         return 0
 
     wrapper = find_wrapper()
+    if wrapper is None:
+        print("claude-token-rewrite-bash: trim wrapper not found; leaving command unchanged", file=sys.stderr)
+        print("{}")
+        return 0
     wrapped = build_wrapped_command(wrapper, argv)
 
     response = {
