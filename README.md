@@ -54,3 +54,15 @@ After publishing to GitHub, users can add the marketplace with:
 
 This plugin intentionally does not auto-enable hooks globally. See `plugins/claude-token-optimizer/examples/settings.example.json` for an opt-in project settings example.
 
+### Optional: auxiliary AI delegation
+
+If you also have Gemini CLI or Codex CLI access, the plugin can use them as an opt-in read-only assistant to save Claude tokens on broad exploration or long logs:
+
+```text
+/claude-token-optimizer:delegate enable --provider gemini
+/claude-token-optimizer:delegate ask --provider gemini --prompt "Summarize this failing test log" --context ./log.txt
+/claude-token-optimizer:delegate disable
+```
+
+The underlying command is `claude-token-delegate`. It is OFF by default, stores local state in `.claude-token-optimizer/`, prints only a bounded preview back to Claude, and saves full auxiliary responses locally. Do not delegate secrets or private data to another AI provider unless your policy allows it.
+

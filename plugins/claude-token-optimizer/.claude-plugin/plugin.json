@@ -11,6 +11,10 @@
     "cost",
     "context",
     "statusline",
-    "hooks"
+    "hooks",
+    "gemini",
+    "codex",
+    "auxiliary-ai",
+    "delegation"
   ]
 }

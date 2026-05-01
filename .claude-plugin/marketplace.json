@@ -8,20 +8,26 @@
     {
       "name": "claude-token-optimizer",
       "source": "./plugins/claude-token-optimizer",
-      "description": "Skills and local helper commands for reducing Claude Code token usage, context bloat, and noisy tool output.",
+      "description": "Skills and local helper commands for reducing Claude Code token usage, including opt-in Gemini/Codex delegation for noisy read-only analysis.",
       "license": "MIT",
       "keywords": [
         "claude-code",
         "tokens",
         "cost",
         "context",
-        "hooks"
+        "hooks",
+        "gemini",
+        "codex",
+        "auxiliary-ai"
       ],
       "category": "developer-tools",
       "tags": [
         "token-optimization",
         "cost-management",
-        "context-management"
+        "context-management",
+        "auxiliary-ai",
+        "gemini",
+        "codex"
       ]
     }
   ]

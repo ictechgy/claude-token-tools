@@ -70,6 +70,89 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertEqual(data["tokens"]["output"], 5)
         self.assertEqual(data["tokens"]["cache_read"], 3)
 
+    def test_aux_delegate_enable_disable_and_disabled_ask(self):
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(Path(tmp) / "config.json")
+            enable = subprocess.run(
+                [sys.executable, str(ROOT / "claude-token-kit" / "aux_ai_delegate.py"), "enable", "--provider", "gemini"],
+                text=True,
+                capture_output=True,
+                env=env,
+                check=True,
+            )
+            self.assertIn("enabled auxiliary AI delegation", enable.stdout)
+
+            disable = subprocess.run(
+                [sys.executable, str(ROOT / "claude-token-kit" / "aux_ai_delegate.py"), "disable"],
+                text=True,
+                capture_output=True,
+                env=env,
+                check=True,
+            )
+            self.assertIn("disabled auxiliary AI delegation", disable.stdout)
+
+            ask = subprocess.run(
+                [sys.executable, str(ROOT / "claude-token-kit" / "aux_ai_delegate.py"), "ask", "--provider", "gemini", "--prompt", "hello"],
+                text=True,
+                capture_output=True,
+                env=env,
+            )
+            self.assertEqual(ask.returncode, 3)
+            self.assertIn("delegation is disabled", ask.stderr)
+
+    def test_aux_delegate_runs_mock_provider_and_trims_preview(self):
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text(json.dumps({
+                "aux_ai_enabled": True,
+                "default_provider": "gemini",
+                "max_output_chars": 40,
+                "delegation_dir": str(Path(tmp) / "delegations"),
+                "providers": {
+                    "gemini": {
+                        "enabled": True,
+                        "command": [
+                            sys.executable,
+                            "-c",
+                            "import sys; data=sys.stdin.read(); print('MOCK:' + data[:120])",
+                        ],
+                        "stdin": True,
+                    }
+                },
+            }), encoding="utf-8")
+            env = os.environ.copy()
+            env["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(config_path)
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "claude-token-kit" / "aux_ai_delegate.py"),
+                    "ask",
+                    "--provider",
+                    "gemini",
+                    "--prompt",
+                    "analyze this",
+                ],
+                text=True,
+                capture_output=True,
+                env=env,
+                check=True,
+            )
+            self.assertIn("provider=gemini", proc.stdout)
+            self.assertIn("response_saved=", proc.stdout)
+            self.assertIn("MOCK:", proc.stdout)
+            self.assertIn("trimmed=true", proc.stdout)
+            saved_line = next(line for line in proc.stdout.splitlines() if line.startswith("response_saved="))
+            saved_path = Path(saved_line.split("=", 1)[1])
+            self.assertTrue(saved_path.exists())
+
+
 
 if __name__ == "__main__":
     unittest.main()

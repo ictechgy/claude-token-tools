@@ -19,6 +19,8 @@
 
 - tool call 수
 - 읽은 파일 수
+- auxiliary AI call 수와 provider
+- auxiliary response preview chars / saved full response chars
 - Bash output line 수
 - `/context` 상위 카테고리
 - human correction 횟수
@@ -72,6 +74,13 @@ F. Subagent isolation
 
 - noisy 탐색/로그 분석만 subagent로 격리
 - agent team 미사용
+
+G. Auxiliary AI delegation
+
+- Gemini/Codex CLI를 opt-in으로 활성화
+- 긴 로그/광범위 탐색을 `claude-token-delegate ask --context ...`로 보조 AI에 위임
+- Claude에는 bounded preview만 전달
+- 품질, privacy risk, saved-response 재참조 빈도를 함께 기록
 
 ## 4. 실행 프로토콜
 
