@@ -12,6 +12,7 @@ Claude Code CLI token 절감을 위한 실험용 도구 모음입니다. 전부 
 - `guard_large_read.py` — Claude Code `PreToolUse` Read hook에서 큰 파일 전체 읽기를 막고 symbol/line-range 읽기로 유도
 - `read_symbol.py` — Python/JS/TS/Go/Rust 파일에서 지정 symbol 주변만 출력
 - `sanitize_output.py` — `rg`/`grep`/`git diff` 같은 검색·diff output에서 credential을 redaction하고 head/anchor/tail로 축약
+- `setup_wizard.py` — 설치 후 project-local `.claude/settings.json`을 interactive하게 선택/merge
 - `settings.example.json` — project `.claude/settings.json` 예시
 - `aux_ai_delegate.py` — Gemini/Codex 같은 보조 AI CLI를 opt-in으로 호출해 Claude context를 절약
 
@@ -21,6 +22,7 @@ Claude Code CLI token 절감을 위한 실험용 도구 모음입니다. 전부 
 python3 claude-token-kit/trim_command_output.py --max-lines 80 -- bash -lc 'seq 1 1000; echo FAIL test_x >&2; exit 1'
 python3 claude-token-kit/trim_command_output.py --max-lines 80 -- pytest tests -q
 python3 claude-token-kit/claude_transcript_cost_audit.py ~/.claude/projects --top 10 --recommend
+python3 claude-token-kit/setup_wizard.py
 python3 claude-token-kit/claude_token_diet.py scan . --json
 python3 claude-token-kit/read_symbol.py path/to/file.py TargetSymbol
 python3 claude-token-kit/sanitize_output.py -- rg -n "TOKEN|SECRET" .
@@ -36,6 +38,8 @@ python3 claude-token-kit/aux_ai_delegate.py disable
 `claude_transcript_cost_audit.py --recommend`의 기본 출력은 공유 안전성을 위해 transcript 경로를 `basename#hash`, 명령을 `command#hash` 형태로 익명화합니다. 로컬 원문 식별자가 꼭 필요할 때만 `--show-paths` 또는 `--show-commands`를 추가하세요.
 
 `claude_token_diet.py scan`은 항상 로컬에서만 읽는 read-only scanner입니다. 기본 출력은 project root를 익명화하고 상대경로 중심으로 보고합니다. `--show-paths`는 로컬/비공개 디버깅에서만 쓰세요.
+
+`setup_wizard.py`는 설치 후 한 번 실행하는 설정 마법사입니다. 터미널에서 실행하면 deny rules, statusline, Bash trim/sanitize hook, large Read guard, model/effort default, 선택적 Gemini/Codex delegation을 물어보고 project-local `.claude/settings.json`에 merge합니다. 비대화형 환경에서는 `--plan`으로 미리 보고 `--yes`로 추천값을 적용하세요. 보조 AI 위임은 명시적으로 `--aux-provider gemini|codex`를 선택할 때만 켜집니다.
 
 `guard_large_read.py`는 opt-in Read hook입니다. 큰 파일을 통째로 Claude context에 넣기 전에 `rg -n`으로 symbol 후보를 찾고 `read_symbol.py`로 필요한 함수/클래스 주변만 읽도록 안내합니다. `CLAUDE_TOKEN_READ_GUARD=0`으로 로컬에서 일시 비활성화할 수 있습니다.
 

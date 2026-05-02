@@ -1,0 +1,391 @@
+#!/usr/bin/env python3
+"""Interactive project setup for the Claude token optimizer plugin.
+
+The wizard applies only project-local, opt-in settings. It can run interactively
+in a terminal, or non-interactively with --yes/--plan for Claude Code skills and
+CI tests.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as _dt
+import json
+import os
+import shutil
+import stat
+import sys
+import uuid
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+SETTINGS_REL = Path(".claude/settings.json")
+STATE_DIR_REL = Path(".claude-token-optimizer")
+CONFIG_REL = STATE_DIR_REL / "config.json"
+
+RECOMMENDED_DENIES = [
+    "Read(./node_modules/**)",
+    "Read(./dist/**)",
+    "Read(./build/**)",
+    "Read(./coverage/**)",
+    "Read(./logs/**)",
+    "Read(./tmp/**)",
+    "Read(./target/**)",
+    "Read(./.next/**)",
+    "Read(./.venv/**)",
+    "Read(./vendor/**)",
+    "Read(./.claude-token-optimizer/**)",
+    "Read(./.env)",
+    "Read(./.env.*)",
+    "Read(./.npmrc)",
+    "Read(./.pypirc)",
+    "Read(./.netrc)",
+    "Read(~/.ssh/**)",
+    "Read(~/.aws/**)",
+    "Read(~/.gnupg/**)",
+    "Read(~/.kube/**)",
+    "Read(~/.docker/**)",
+]
+STATUSLINE = {"type": "command", "command": "claude-token-statusline"}
+BASH_HOOK = {"matcher": "Bash", "hooks": [{"type": "command", "command": "claude-token-rewrite-bash"}]}
+READ_HOOK = {"matcher": "Read", "hooks": [{"type": "command", "command": "claude-token-guard-read"}]}
+DEFAULT_MODEL = "sonnet"
+DEFAULT_EFFORT = "medium"
+
+
+@dataclass
+class Choices:
+    denies: bool = True
+    statusline: bool = True
+    bash_hook: bool = True
+    read_guard: bool = True
+    model_defaults: bool = True
+    aux_provider: str = "none"
+
+
+@dataclass
+class SetupResult:
+    root: Path
+    settings_path: Path
+    changed: bool
+    applied: bool
+    choices: Choices
+    actions: list[str]
+    backup_path: Path | None = None
+    aux_config_path: Path | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "root": str(self.root),
+            "settings_path": str(self.settings_path),
+            "changed": self.changed,
+            "applied": self.applied,
+            "backup_path": str(self.backup_path) if self.backup_path else None,
+            "aux_config_path": str(self.aux_config_path) if self.aux_config_path else None,
+            "choices": self.choices.__dict__,
+            "actions": self.actions,
+        }
+
+
+def find_project_root(start: Path | None = None) -> Path:
+    current = (start or Path.cwd()).expanduser().resolve()
+    if current.is_file():
+        current = current.parent
+    for candidate in [current, *current.parents]:
+        if (candidate / ".git").exists() or (candidate / ".claude").exists():
+            return candidate
+    return current
+
+
+def load_json_object(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    if path.is_symlink():
+        raise SystemExit(f"Refusing to write through symlinked settings file: {path}")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Invalid JSON in {path}: line {exc.lineno}: {exc.msg}") from exc
+    except OSError as exc:
+        raise SystemExit(f"Could not read {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise SystemExit(f"Settings file must contain a JSON object: {path}")
+    return data
+
+
+def ensure_permissions(settings: dict[str, Any], actions: list[str]) -> None:
+    permissions = settings.setdefault("permissions", {})
+    if not isinstance(permissions, dict):
+        permissions = {}
+        settings["permissions"] = permissions
+    deny = permissions.setdefault("deny", [])
+    if not isinstance(deny, list):
+        deny = []
+        permissions["deny"] = deny
+    added = 0
+    for rule in RECOMMENDED_DENIES:
+        if rule not in deny:
+            deny.append(rule)
+            added += 1
+    if added:
+        actions.append(f"added {added} permissions.deny rules for bulky/sensitive paths")
+
+
+def command_values(value: Any) -> list[str]:
+    found: list[str] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key == "command" and isinstance(item, str):
+                found.append(item)
+            found.extend(command_values(item))
+    elif isinstance(value, list):
+        for item in value:
+            found.extend(command_values(item))
+    return found
+
+
+def has_hook_command(pre_tool_use: list[Any], command: str) -> bool:
+    return any(command in value for entry in pre_tool_use for value in command_values(entry))
+
+
+def ensure_pre_tool_hook(settings: dict[str, Any], hook: dict[str, Any], command: str, label: str, actions: list[str]) -> None:
+    hooks = settings.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        hooks = {}
+        settings["hooks"] = hooks
+    pre = hooks.setdefault("PreToolUse", [])
+    if not isinstance(pre, list):
+        pre = []
+        hooks["PreToolUse"] = pre
+    if has_hook_command(pre, command):
+        return
+    pre.append(hook)
+    actions.append(f"enabled {label} hook via {command}")
+
+
+def apply_choices(settings: dict[str, Any], choices: Choices) -> list[str]:
+    actions: list[str] = []
+    if choices.model_defaults:
+        if not settings.get("model"):
+            settings["model"] = DEFAULT_MODEL
+            actions.append(f"set default model to {DEFAULT_MODEL}")
+        if not settings.get("effortLevel"):
+            settings["effortLevel"] = DEFAULT_EFFORT
+            actions.append(f"set default effortLevel to {DEFAULT_EFFORT}")
+    if choices.statusline and settings.get("statusLine") != STATUSLINE:
+        settings["statusLine"] = dict(STATUSLINE)
+        actions.append("enabled token statusline")
+    if choices.denies:
+        ensure_permissions(settings, actions)
+    if choices.bash_hook:
+        ensure_pre_tool_hook(settings, dict(BASH_HOOK), "claude-token-rewrite-bash", "Bash trim/sanitize", actions)
+    if choices.read_guard:
+        ensure_pre_tool_hook(settings, dict(READ_HOOK), "claude-token-guard-read", "large Read guard", actions)
+    return actions
+
+
+def ensure_private_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(path, 0o700)
+    except OSError:
+        pass
+
+
+def atomic_write(path: Path, text: str, mode: int = 0o644) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    fd = os.open(tmp, flags, mode)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            fd = -1
+            f.write(text)
+        os.replace(tmp, path)
+        os.chmod(path, mode)
+    finally:
+        if fd != -1:
+            os.close(fd)
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def write_private_gitignore(state_dir: Path) -> None:
+    ensure_private_dir(state_dir)
+    atomic_write(state_dir / ".gitignore", "*\n!.gitignore\n", 0o600)
+
+
+def write_aux_config(root: Path, provider: str, actions: list[str], *, dry_run: bool) -> Path | None:
+    if provider == "none":
+        return None
+    config_path = root / CONFIG_REL
+    actions.append(f"enabled auxiliary AI delegation default_provider={provider}")
+    if dry_run:
+        return config_path
+    write_private_gitignore(config_path.parent)
+    config = {
+        "aux_ai_enabled": True,
+        "default_provider": provider,
+        "context_policy": {"allow_sensitive_paths": [], "allow_outside_project_paths": []},
+    }
+    atomic_write(config_path, json.dumps(config, indent=2, sort_keys=True) + "\n", 0o600)
+    return config_path
+
+
+def backup_existing(path: Path) -> Path | None:
+    if not path.exists():
+        return None
+    stamp = _dt.datetime.now().strftime("%Y%m%d%H%M%S")
+    backup = path.with_name(f"{path.name}.bak-{stamp}")
+    shutil.copy2(path, backup)
+    return backup
+
+
+def prompt_bool(question: str, default: bool) -> bool:
+    suffix = "Y/n" if default else "y/N"
+    while True:
+        answer = input(f"{question} [{suffix}] ").strip().lower()
+        if not answer:
+            return default
+        if answer in {"y", "yes"}:
+            return True
+        if answer in {"n", "no"}:
+            return False
+        print("Please answer y or n.")
+
+
+def prompt_provider() -> str:
+    while True:
+        answer = input("Auxiliary AI provider [gemini/codex, default gemini] ").strip().lower()
+        if not answer:
+            return "gemini"
+        if answer in {"gemini", "codex"}:
+            return answer
+        print("Please choose gemini or codex.")
+
+
+def interactive_choices(defaults: Choices) -> Choices:
+    print("Claude Token Optimizer setup wizard")
+    print("Project-local changes only. Existing settings are merged, not replaced.\n")
+    choices = Choices(
+        denies=prompt_bool("Add deny rules for bulky/sensitive paths?", defaults.denies),
+        statusline=prompt_bool("Enable token/cost statusline?", defaults.statusline),
+        bash_hook=prompt_bool("Enable Bash output trim + grep/diff sanitizer hook?", defaults.bash_hook),
+        read_guard=prompt_bool("Enable large Read guard?", defaults.read_guard),
+        model_defaults=prompt_bool("Set missing defaults to model=sonnet and effortLevel=medium?", defaults.model_defaults),
+        aux_provider="none",
+    )
+    if prompt_bool("Enable auxiliary AI delegation now? This may send selected context to Gemini/Codex.", False):
+        choices.aux_provider = prompt_provider()
+    return choices
+
+
+def choices_from_args(args: argparse.Namespace) -> Choices:
+    return Choices(
+        denies=not args.no_denies,
+        statusline=not args.no_statusline,
+        bash_hook=not args.no_bash_hook,
+        read_guard=not args.no_read_guard,
+        model_defaults=not args.no_model_defaults,
+        aux_provider=args.aux_provider,
+    )
+
+
+def render_text(result: SetupResult) -> str:
+    mode = "applied" if result.applied else "plan only"
+    lines = [
+        f"Claude Token Optimizer setup ({mode})",
+        f"root={result.root}",
+        f"settings={result.settings_path}",
+    ]
+    if result.backup_path:
+        lines.append(f"backup={result.backup_path}")
+    if result.aux_config_path:
+        lines.append(f"aux_config={result.aux_config_path}")
+    lines.append("actions:")
+    if result.actions:
+        lines.extend(f"- {action}" for action in result.actions)
+    else:
+        lines.append("- no settings changes needed")
+    if not result.applied:
+        lines.append("Run with --yes to apply the selected plan non-interactively.")
+    return "\n".join(lines) + "\n"
+
+
+def run(args: argparse.Namespace) -> SetupResult:
+    root = find_project_root(Path(args.root))
+    settings_path = root / SETTINGS_REL
+    original = load_json_object(settings_path)
+    settings = json.loads(json.dumps(original))
+
+    choices = choices_from_args(args)
+    interactive = sys.stdin.isatty() and not args.yes and not args.plan and not args.dry_run
+    if interactive:
+        choices = interactive_choices(choices)
+
+    actions = apply_choices(settings, choices)
+    aux_actions: list[str] = []
+    aux_path = write_aux_config(root, choices.aux_provider, aux_actions, dry_run=True)
+    actions.extend(aux_actions)
+    changed = settings != original or choices.aux_provider != "none"
+
+    applied = bool(args.yes and not args.dry_run and not args.plan)
+    if interactive and changed:
+        preview = SetupResult(root, settings_path, changed, False, choices, actions, aux_config_path=aux_path)
+        print("\n" + render_text(preview))
+        applied = prompt_bool("Apply these project-local changes now?", True)
+
+    backup_path = None
+    if applied and changed:
+        if settings_path.exists() and not args.no_backup and settings != original:
+            backup_path = backup_existing(settings_path)
+        if settings != original:
+            atomic_write(settings_path, json.dumps(settings, indent=2, sort_keys=False) + "\n", 0o644)
+        aux_path = write_aux_config(root, choices.aux_provider, [], dry_run=False)
+
+    return SetupResult(root, settings_path, changed, applied, choices, actions, backup_path, aux_path)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Interactively configure Claude token optimizer project settings.")
+    parser.add_argument("--root", default=".", help="project root to configure (default: current directory)")
+    parser.add_argument("--yes", action="store_true", help="apply the recommended/selected setup without prompts")
+    parser.add_argument("--plan", action="store_true", help="show the setup plan without writing files")
+    parser.add_argument("--dry-run", action="store_true", help="alias for --plan")
+    parser.add_argument("--json", action="store_true", help="print machine-readable result")
+    parser.add_argument("--no-backup", action="store_true", help="do not create .bak-* before modifying existing settings")
+    parser.add_argument("--no-denies", action="store_true", help="skip recommended permissions.deny rules")
+    parser.add_argument("--no-statusline", action="store_true", help="skip token statusline")
+    parser.add_argument("--no-bash-hook", action="store_true", help="skip Bash trim/sanitize hook")
+    parser.add_argument("--no-read-guard", action="store_true", help="skip large Read guard hook")
+    parser.add_argument("--no-model-defaults", action="store_true", help="skip model/effort defaults")
+    parser.add_argument(
+        "--aux-provider",
+        choices=["none", "gemini", "codex"],
+        default="none",
+        help="optionally enable auxiliary AI delegation with this default provider",
+    )
+    return parser
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+    if args.dry_run:
+        args.plan = True
+    # Safety default for non-interactive Claude Code Bash calls: do not write
+    # unless --yes is explicit.
+    if not sys.stdin.isatty() and not args.yes:
+        args.plan = True
+    result = run(args)
+    if args.json:
+        print(json.dumps(result.as_dict(), indent=2, sort_keys=True))
+    else:
+        print(render_text(result))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

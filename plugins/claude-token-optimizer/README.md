@@ -7,6 +7,7 @@ A Claude Code plugin with skills and helper commands for reducing token usage.
 After installation, use:
 
 ```text
+/claude-token-optimizer:setup
 /claude-token-optimizer:optimize
 /claude-token-optimizer:audit
 /claude-token-optimizer:delegate
@@ -18,6 +19,7 @@ The plugin exposes executables in `bin/` while enabled:
 
 ```bash
 claude-token-audit ~/.claude/projects --top 20 --recommend
+claude-token-setup
 claude-token-diet scan . --json
 claude-trim-output --max-lines 120 -- npm test
 claude-read-symbol path/to/file.py TargetSymbol
@@ -33,6 +35,8 @@ claude-token-delegate disable
 ```
 
 `claude-token-audit --recommend` anonymizes transcript paths and command strings by default (`basename#hash`, `command#hash`). Use `--show-paths` or `--show-commands` only for local/private reports.
+
+`claude-token-setup` is the post-install wizard. Run it directly in a terminal for interactive prompts, or run `claude-token-setup --plan` followed by `claude-token-setup --yes` for the recommended project-local setup. It merges `.claude/settings.json` instead of replacing it, and it never enables auxiliary Gemini/Codex delegation unless selected explicitly with `--aux-provider gemini|codex`.
 
 `claude-token-diet scan` is a local read-only scanner for project Claude settings and context bloat. It checks missing `permissions.deny` guardrails, Bash trim hook/statusline setup, broad read allows, high default model/effort, many MCP servers, and large/secret-like `CLAUDE.md` or `AGENTS.md` context files. It anonymizes the project root by default; use `--show-paths` only for local/private reports.
 

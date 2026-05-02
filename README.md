@@ -29,8 +29,10 @@ This repository is also structured as a Claude Code plugin marketplace.
 - Marketplace file: `.claude-plugin/marketplace.json`
 - Plugin: `plugins/claude-token-optimizer/`
 - Main skills after install:
+  - `/claude-token-optimizer:setup`
   - `/claude-token-optimizer:optimize`
   - `/claude-token-optimizer:audit`
+  - `/claude-token-optimizer:delegate`
 
 Local test:
 
@@ -53,6 +55,20 @@ After publishing to GitHub, users can add the marketplace with:
 ```
 
 This plugin intentionally does not auto-enable hooks globally. See `plugins/claude-token-optimizer/examples/settings.example.json` for an opt-in project settings example.
+
+After installing, run the guided project setup instead of memorizing all helper commands:
+
+```bash
+claude-token-setup
+```
+
+Inside Claude Code, use:
+
+```text
+/claude-token-optimizer:setup
+```
+
+The wizard lets you choose deny rules, statusline, Bash trim/sanitize hook, large Read guard, model/effort defaults, and optional Gemini/Codex delegation. It merges project-local `.claude/settings.json`; it does not modify global Claude settings.
 
 For local project hygiene, run:
 

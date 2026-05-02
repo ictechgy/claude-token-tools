@@ -24,11 +24,13 @@ IMPLEMENTATION_PAIRS = [
     (KIT_DIR / "read_symbol.py", PLUGIN_BIN / "claude-read-symbol"),
     (KIT_DIR / "rewrite_bash_for_token_budget.py", PLUGIN_BIN / "claude-token-rewrite-bash"),
     (KIT_DIR / "sanitize_output.py", PLUGIN_BIN / "claude-sanitize-output"),
+    (KIT_DIR / "setup_wizard.py", PLUGIN_BIN / "claude-token-setup"),
     (KIT_DIR / "trim_command_output.py", PLUGIN_BIN / "claude-trim-output"),
     (KIT_DIR / "statusline.sh", PLUGIN_BIN / "claude-token-statusline"),
 ]
 TRIM_SCRIPTS = [KIT_DIR / "trim_command_output.py", PLUGIN_BIN / "claude-trim-output"]
 SANITIZE_SCRIPTS = [KIT_DIR / "sanitize_output.py", PLUGIN_BIN / "claude-sanitize-output"]
+SETUP_SCRIPTS = [KIT_DIR / "setup_wizard.py", PLUGIN_BIN / "claude-token-setup"]
 DIET_SCRIPTS = [KIT_DIR / "claude_token_diet.py", PLUGIN_BIN / "claude-token-diet"]
 READ_GUARD_SCRIPTS = [KIT_DIR / "guard_large_read.py", PLUGIN_BIN / "claude-token-guard-read"]
 READ_SYMBOL_SCRIPTS = [KIT_DIR / "read_symbol.py", PLUGIN_BIN / "claude-read-symbol"]
@@ -271,6 +273,112 @@ class ClaudeTokenKitTests(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 0)
         self.assertIn("TOKEN=[REDACTED]", proc.stdout)
+
+    def test_setup_wizard_plan_is_read_only_and_reports_recommended_actions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "setup_wizard.py"), "--root", str(root), "--plan", "--json"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            self.assertFalse(data["applied"])
+            self.assertTrue(data["changed"])
+            self.assertIn("enabled token statusline", data["actions"])
+            self.assertFalse((root / ".claude" / "settings.json").exists())
+
+    def test_setup_wizard_apply_recommended_writes_project_settings_for_kit_and_plugin(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--root",
+                            str(root),
+                            "--yes",
+                            "--no-backup",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertTrue(data["applied"])
+                    settings = json.loads((root / ".claude" / "settings.json").read_text(encoding="utf-8"))
+                    self.assertEqual(settings["model"], "sonnet")
+                    self.assertEqual(settings["effortLevel"], "medium")
+                    self.assertEqual(settings["statusLine"]["command"], "claude-token-statusline")
+                    deny = settings["permissions"]["deny"]
+                    self.assertIn("Read(./node_modules/**)", deny)
+                    self.assertIn("Read(./.env)", deny)
+                    commands = json.dumps(settings["hooks"])
+                    self.assertIn("claude-token-rewrite-bash", commands)
+                    self.assertIn("claude-token-guard-read", commands)
+
+                    again = subprocess.run(
+                        [sys.executable, str(script), "--root", str(root), "--yes", "--no-backup", "--json"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    again_data = json.loads(again.stdout)
+                    self.assertFalse(again_data["changed"])
+                    self.assertEqual(again_data["actions"], [])
+
+    def test_setup_wizard_merges_existing_hooks_and_writes_private_aux_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings_path = root / ".claude" / "settings.json"
+            settings_path.parent.mkdir()
+            settings_path.write_text(
+                json.dumps({
+                    "hooks": {
+                        "PreToolUse": [
+                            {"matcher": "Bash", "hooks": [{"type": "command", "command": "existing-wrapper"}]}
+                        ]
+                    },
+                    "permissions": {"deny": ["Read(./custom/**)"]},
+                }),
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(KIT_DIR / "setup_wizard.py"),
+                    "--root",
+                    str(root),
+                    "--yes",
+                    "--no-backup",
+                    "--aux-provider",
+                    "codex",
+                    "--json",
+                ],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            self.assertTrue(data["applied"])
+            settings = json.loads(settings_path.read_text(encoding="utf-8"))
+            hooks_json = json.dumps(settings["hooks"])
+            self.assertIn("existing-wrapper", hooks_json)
+            self.assertIn("claude-token-rewrite-bash", hooks_json)
+            self.assertIn("claude-token-guard-read", hooks_json)
+            self.assertIn("Read(./custom/**)", settings["permissions"]["deny"])
+
+            config_path = root / ".claude-token-optimizer" / "config.json"
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertTrue(config["aux_ai_enabled"])
+            self.assertEqual(config["default_provider"], "codex")
+            self.assertEqual(stat.S_IMODE(config_path.stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(config_path.parent.stat().st_mode), 0o700)
+            self.assertTrue((config_path.parent / ".gitignore").exists())
 
     def test_trim_extracts_pytest_failure_summary_from_long_logs(self):
         code = (
