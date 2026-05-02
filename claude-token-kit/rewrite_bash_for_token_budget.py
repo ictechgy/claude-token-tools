@@ -11,7 +11,6 @@ import json
 import os
 import re
 import shlex
-import shutil
 import sys
 
 # Reject shell control syntax before wrapping. The wrapper is intended only for a
@@ -25,15 +24,9 @@ def find_wrapper() -> str | None:
     candidates = [
         os.path.join(script_dir, "claude-trim-output"),
         os.path.join(script_dir, "trim_command_output.py"),
-        "claude-token-kit/trim_command_output.py",
-        ".claude/hooks/trim_command_output.py",
-        "claude-trim-output",
     ]
     for path in candidates:
-        if os.path.sep in path or (os.path.altsep and os.path.altsep in path):
-            if os.path.exists(path):
-                return path
-        elif shutil.which(path):
+        if os.path.exists(path):
             return path
     return None
 

@@ -17,9 +17,15 @@ jq_get() {
   jq -r "$1 // empty" <<<"$input" 2>/dev/null || true
 }
 
+sanitize_status() {
+  # Statusline values may come from untrusted workspace metadata; keep one-line printable text.
+  LC_ALL=C tr -d '\033\r\n' <<<"$1" | cut -c 1-160
+}
+
 model=$(jq_get '.model.display_name')
 model=${model:-$(jq_get '.model.id')}
 model=${model:-unknown}
+model=$(sanitize_status "$model")
 
 context_pct=$(jq_get '.context_window.used_percentage')
 if [[ -n "$context_pct" ]]; then
@@ -38,11 +44,13 @@ fi
 cwd=$(jq_get '.workspace.current_dir')
 dir=${cwd##*/}
 dir=${dir:-.}
+dir=$(sanitize_status "$dir")
 
 branch=''
 if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   b=$(git branch --show-current 2>/dev/null || true)
   if [[ -n "$b" ]]; then
+    b=$(sanitize_status "$b")
     branch=" | ${b}"
   fi
 fi

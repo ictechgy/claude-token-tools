@@ -15,7 +15,12 @@
       "Read(./tmp/**)",
       "Read(./.claude-token-optimizer/**)",
       "Read(./.env)",
-      "Read(./.env.*)"
+      "Read(./.env.*)",
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/**)",
+      "Read(~/.gnupg/**)",
+      "Read(~/.kube/**)",
+      "Read(~/.docker/**)"
     ]
   },
   "hooks": {

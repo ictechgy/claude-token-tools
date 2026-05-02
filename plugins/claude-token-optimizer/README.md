@@ -64,4 +64,6 @@ claude-token-delegate disable
 Only delegate context you are allowed to share with that external provider. The helper prints a bounded, untrusted preview to Claude and saves the full untrusted auxiliary response locally.
 
 
-Delegation allows project-root context files by default and blocks outside-project paths, obvious secret-like paths, and credential-like file contents. If policy review approves sharing a blocked file with the selected provider, allow only that exact path. Saved responses are written under `.claude-token-optimizer/` with private file permissions and a private `.gitignore`.
+Delegation allows project-root context files by default and blocks outside-project paths, obvious secret-like paths, and credential-like file contents. If policy review approves sharing a blocked file with the selected provider, allow only that exact path in the trusted private config `context_policy`; there is no CLI bypass flag. Saved responses are written under `.claude-token-optimizer/` with private file permissions and a private `.gitignore`.
+
+Provider CLIs run with a sanitized environment and isolated `HOME`/XDG/TMP directories. This reduces ambient credential exposure, but it may require API-key based provider auth or a reviewed custom provider setup instead of implicit home-directory OAuth state.
