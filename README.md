@@ -120,10 +120,11 @@ If you also have Gemini CLI or Codex CLI access, the plugin can use them as an o
 
 ```text
 /claude-token-optimizer:delegate enable --provider gemini
+/claude-token-optimizer:delegate auto-enable
 /claude-token-optimizer:delegate ask --provider gemini --prompt "Summarize this failing test log" --context ./log.txt
 /claude-token-optimizer:delegate disable
 ```
 
-The underlying command is `claude-token-delegate`. It is OFF by default, stores local state in `.claude-token-optimizer/`, prints only a bounded preview back to Claude, and saves full auxiliary responses locally. Do not delegate secrets or private data to another AI provider unless your policy allows it.
+The underlying command is `claude-token-delegate`. Manual delegation is OFF by default, stores local state in `.claude-token-optimizer/`, prints only a bounded preview back to Claude, and saves full auxiliary responses locally. Do not delegate secrets or private data to another AI provider unless your policy allows it.
 
-When delegation is enabled, plugin skills may use it automatically for safe read-only work that would otherwise burn a lot of Claude context, such as long-log summarization, broad file triage, root-cause hypotheses, or second-opinion planning. They should still run `claude-token-delegate status` first, avoid blocked/sensitive/customer data, keep prompts narrow, and treat auxiliary output as untrusted until verified.
+Automatic delegation is a separate opt-in. After manual delegation is enabled, run `claude-token-delegate auto-enable` only if plugin skills may use the selected provider for safe read-only work that would otherwise burn a lot of Claude context, such as long-log summarization, broad file triage, root-cause hypotheses, or second-opinion planning. Automatic calls must use helper-validated `--context` files, keep `--prompt` to a short instruction, avoid blocked/sensitive/customer/policy-prohibited data, and treat auxiliary output as untrusted until verified.

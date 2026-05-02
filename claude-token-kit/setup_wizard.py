@@ -61,6 +61,7 @@ class Choices:
     read_guard: bool = True
     model_defaults: bool = True
     aux_provider: str = "none"
+    auto_delegate: bool = False
 
 
 @dataclass
@@ -290,6 +291,7 @@ def write_aux_config(
     provider: str,
     actions: list[str],
     *,
+    auto_delegate: bool,
     dry_run: bool,
     backup: bool,
 ) -> tuple[Path | None, Path | None]:
@@ -297,6 +299,8 @@ def write_aux_config(
         return None, None
     config_path = root / CONFIG_REL
     actions.append(f"enabled auxiliary AI delegation default_provider={provider}")
+    if auto_delegate:
+        actions.append("enabled automatic safe delegation for plugin skills")
     if dry_run:
         return config_path, None
     if config_path.parent.exists() and config_path.parent.is_symlink():
@@ -309,6 +313,8 @@ def write_aux_config(
     elif not isinstance(policy, dict):
         raise SystemExit("Refusing to replace non-object aux context_policy; repair it manually first.")
     config["aux_ai_enabled"] = True
+    if auto_delegate or "auto_delegate_enabled" not in config:
+        config["auto_delegate_enabled"] = bool(auto_delegate)
     config["default_provider"] = provider
     backup_path = backup_existing(config_path) if backup else None
     atomic_write(config_path, json.dumps(config, indent=2, sort_keys=True) + "\n", 0o600)
@@ -360,6 +366,10 @@ def interactive_choices(defaults: Choices) -> Choices:
     )
     if prompt_bool("Enable auxiliary AI delegation now? This may send selected context to Gemini/Codex.", False):
         choices.aux_provider = prompt_provider()
+        choices.auto_delegate = prompt_bool(
+            "Allow plugin skills to auto-delegate safe read-only project context when it saves Claude tokens?",
+            False,
+        )
     return choices
 
 
@@ -371,6 +381,7 @@ def choices_from_args(args: argparse.Namespace) -> Choices:
         read_guard=not args.no_read_guard,
         model_defaults=not args.no_model_defaults,
         aux_provider=args.aux_provider,
+        auto_delegate=args.auto_delegate,
     )
 
 
@@ -406,6 +417,8 @@ def run(args: argparse.Namespace) -> SetupResult:
     interactive = sys.stdin.isatty() and not args.yes and not args.plan and not args.dry_run
     if interactive:
         choices = interactive_choices(choices)
+    if choices.auto_delegate and choices.aux_provider == "none":
+        raise SystemExit("--auto-delegate requires --aux-provider gemini|codex")
 
     actions = apply_choices(settings, choices)
     aux_actions: list[str] = []
@@ -413,6 +426,7 @@ def run(args: argparse.Namespace) -> SetupResult:
         root,
         choices.aux_provider,
         aux_actions,
+        auto_delegate=choices.auto_delegate,
         dry_run=True,
         backup=False,
     )
@@ -439,6 +453,7 @@ def run(args: argparse.Namespace) -> SetupResult:
             root,
             choices.aux_provider,
             [],
+            auto_delegate=choices.auto_delegate,
             dry_run=False,
             backup=not args.no_backup,
         )
@@ -469,6 +484,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["none", "gemini", "codex"],
         default="none",
         help="optionally enable auxiliary AI delegation with this default provider",
+    )
+    parser.add_argument(
+        "--auto-delegate",
+        action="store_true",
+        help="also allow enabled plugin skills to auto-delegate safe read-only context; requires --aux-provider",
     )
     return parser
 

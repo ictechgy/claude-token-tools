@@ -39,7 +39,7 @@ python3 claude-token-kit/aux_ai_delegate.py disable
 
 `claude_token_diet.py scan`은 항상 로컬에서만 읽는 read-only scanner입니다. 기본 출력은 project root를 익명화하고 상대경로 중심으로 보고합니다. `--show-paths`는 로컬/비공개 디버깅에서만 쓰세요.
 
-`setup_wizard.py`는 설치 후 한 번 실행하는 설정 마법사입니다. 터미널에서 실행하면 deny rules, statusline, Bash trim/sanitize hook, large Read guard, model/effort default, 선택적 Gemini/Codex delegation을 물어보고 project-local `.claude/settings.json`에 merge합니다. 비대화형 환경에서는 `--plan`으로 미리 보고 `--yes`로 추천값을 적용하세요. 보조 AI 위임은 명시적으로 `--aux-provider gemini|codex`를 선택할 때만 켜집니다.
+`setup_wizard.py`는 설치 후 한 번 실행하는 설정 마법사입니다. 터미널에서 실행하면 deny rules, statusline, Bash trim/sanitize hook, large Read guard, model/effort default, 선택적 Gemini/Codex delegation을 물어보고 project-local `.claude/settings.json`에 merge합니다. 비대화형 환경에서는 `--plan`으로 미리 보고 `--yes`로 추천값을 적용하세요. 보조 AI 수동 위임은 명시적으로 `--aux-provider gemini|codex`를 선택할 때만 켜지고, 자동 위임은 `--auto-delegate`를 함께 지정할 때만 켜집니다.
 
 `guard_large_read.py`는 opt-in Read hook입니다. 큰 파일을 통째로 Claude context에 넣기 전에 `rg -n`으로 symbol 후보를 찾고 `read_symbol.py`로 필요한 함수/클래스 주변만 읽도록 안내합니다. `CLAUDE_TOKEN_READ_GUARD=0`으로 로컬에서 일시 비활성화할 수 있습니다.
 
@@ -54,13 +54,14 @@ Claude Code에 적용하려면 `settings.example.json`을 `.claude/settings.json
 
 ```bash
 python3 claude-token-kit/aux_ai_delegate.py enable --provider codex
+python3 claude-token-kit/aux_ai_delegate.py auto-enable
 python3 claude-token-kit/aux_ai_delegate.py ask --provider codex --prompt "Which files should Claude inspect first?" --context ./error.log
 python3 claude-token-kit/aux_ai_delegate.py disable
 ```
 
 외부 provider로 파일 내용이 전송될 수 있으므로 secrets/private data는 보내지 마세요. 보조 AI의 preview와 저장된 전체 응답은 모두 검증 전까지 untrusted output으로 취급하세요.
 
-활성화 후에는 상위 plugin skill이 긴 로그, 넓은 파일 triage, 원인 가설 생성처럼 안전한 read-only 후보에 자동으로 위임할 수 있습니다. 단, 자동 위임은 status 확인 후에만 수행하며, blocked path나 secret/customer data는 계속 제외해야 합니다.
+자동 위임은 별도 opt-in입니다. 수동 delegation을 켠 뒤 `auto-enable`을 실행한 경우에만 상위 plugin skill이 긴 로그, 넓은 파일 triage, 원인 가설 생성처럼 안전한 read-only 후보에 자동 위임할 수 있습니다. 자동 위임은 helper-validated `--context`를 사용하고 blocked path, secret/customer data, policy-prohibited data를 계속 제외해야 합니다.
 
 
 보조 AI 위임은 기본적으로 project root 아래 파일만 context로 허용하고, outside-project paths, `.env*`, key 파일, token/secret 이름 파일, credential-like content를 차단합니다. 정책 검토 후 필요한 경우에만 trusted private config의 `context_policy`로 차단된 exact path를 명시적으로 allow하세요. CLI flag로 차단을 우회할 수는 없습니다. 전체 보조 AI 응답은 `.claude-token-optimizer/` 아래에 `0600` 파일로 저장되며, 도구가 해당 private state 디렉터리에 `.gitignore`를 자동 생성합니다.

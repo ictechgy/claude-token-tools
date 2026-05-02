@@ -375,10 +375,53 @@ class ClaudeTokenKitTests(unittest.TestCase):
             config_path = root / ".claude-token-optimizer" / "config.json"
             config = json.loads(config_path.read_text(encoding="utf-8"))
             self.assertTrue(config["aux_ai_enabled"])
+            self.assertFalse(config["auto_delegate_enabled"])
             self.assertEqual(config["default_provider"], "codex")
             self.assertEqual(stat.S_IMODE(config_path.stat().st_mode), 0o600)
             self.assertEqual(stat.S_IMODE(config_path.parent.stat().st_mode), 0o700)
             self.assertTrue((config_path.parent / ".gitignore").exists())
+
+    def test_setup_wizard_auto_delegate_requires_and_records_aux_opt_in(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            invalid = subprocess.run(
+                [
+                    sys.executable,
+                    str(KIT_DIR / "setup_wizard.py"),
+                    "--root",
+                    str(root),
+                    "--yes",
+                    "--auto-delegate",
+                ],
+                text=True,
+                capture_output=True,
+            )
+            self.assertNotEqual(invalid.returncode, 0)
+            self.assertIn("--auto-delegate requires --aux-provider", invalid.stderr)
+
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(KIT_DIR / "setup_wizard.py"),
+                    "--root",
+                    str(root),
+                    "--yes",
+                    "--no-backup",
+                    "--aux-provider",
+                    "gemini",
+                    "--auto-delegate",
+                    "--json",
+                ],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            self.assertIn("enabled automatic safe delegation", "\n".join(data["actions"]))
+            config_path = root / ".claude-token-optimizer" / "config.json"
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertTrue(config["aux_ai_enabled"])
+            self.assertTrue(config["auto_delegate_enabled"])
 
     def test_setup_wizard_refuses_global_home_settings(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -534,6 +577,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertTrue(Path(data["aux_backup_path"]).exists())
             config = json.loads(config_path.read_text(encoding="utf-8"))
             self.assertTrue(config["aux_ai_enabled"])
+            self.assertFalse(config["auto_delegate_enabled"])
             self.assertEqual(config["default_provider"], "codex")
             self.assertEqual(config["context_policy"]["allow_sensitive_paths"], ["approved.log"])
             self.assertEqual(config["custom_note"], "keep me")
@@ -1367,6 +1411,184 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     )
                     self.assertEqual(ask.returncode, 3)
                     self.assertIn("delegation is disabled", ask.stderr)
+
+    def test_aux_delegate_auto_enable_is_separate_from_manual_enable(self):
+        for script in AUX_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    config_path = Path(tmp) / "config.json"
+                    ctx = Path(tmp) / "log.txt"
+                    ctx.write_text("plain log", encoding="utf-8")
+                    env = os.environ.copy()
+                    env["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(config_path)
+
+                    blocked_auto_enable = subprocess.run(
+                        [sys.executable, str(script), "auto-enable"],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertEqual(blocked_auto_enable.returncode, 3)
+                    self.assertIn("manual auxiliary AI delegation must be enabled", blocked_auto_enable.stderr)
+
+                    subprocess.run(
+                        [sys.executable, str(script), "enable", "--provider", "gemini"],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                        check=True,
+                    )
+                    status = subprocess.run(
+                        [sys.executable, str(script), "status"],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                        check=True,
+                    )
+                    self.assertIn("aux_ai_enabled=true", status.stdout)
+                    self.assertIn("auto_delegate_enabled=false", status.stdout)
+
+                    auto_ask = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "ask",
+                            "--auto",
+                            "--provider",
+                            "gemini",
+                            "--prompt",
+                            "Read-only: summarize",
+                            "--context",
+                            str(ctx),
+                            "--dry-run",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertEqual(auto_ask.returncode, 3)
+                    self.assertIn("automatic auxiliary AI delegation is disabled", auto_ask.stderr)
+
+                    auto_enable = subprocess.run(
+                        [sys.executable, str(script), "auto-enable"],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                        check=True,
+                    )
+                    self.assertIn("enabled automatic auxiliary AI delegation", auto_enable.stdout)
+                    status = subprocess.run(
+                        [sys.executable, str(script), "status"],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                        check=True,
+                    )
+                    self.assertIn("auto_delegate_enabled=true", status.stdout)
+
+                    auto_disable = subprocess.run(
+                        [sys.executable, str(script), "auto-disable"],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                        check=True,
+                    )
+                    self.assertIn("disabled automatic auxiliary AI delegation", auto_disable.stdout)
+                    config = json.loads(config_path.read_text(encoding="utf-8"))
+                    self.assertTrue(config["aux_ai_enabled"])
+                    self.assertFalse(config["auto_delegate_enabled"])
+
+    def test_aux_delegate_auto_ask_requires_context_and_short_safe_prompt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            context = Path(tmp) / "log.txt"
+            context.write_text("plain log", encoding="utf-8")
+            write_private_config(config_path, {"aux_ai_enabled": True, "auto_delegate_enabled": True, "default_provider": "gemini"})
+            env = os.environ.copy()
+            env["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(config_path)
+
+            no_context = subprocess.run(
+                [
+                    sys.executable,
+                    str(KIT_DIR / "aux_ai_delegate.py"),
+                    "ask",
+                    "--auto",
+                    "--provider",
+                    "gemini",
+                    "--prompt",
+                    "Read-only: summarize",
+                    "--dry-run",
+                ],
+                text=True,
+                capture_output=True,
+                env=env,
+            )
+            self.assertEqual(no_context.returncode, 2)
+            self.assertIn("requires at least one helper-validated --context", no_context.stderr)
+
+            sensitive_prompt = subprocess.run(
+                [
+                    sys.executable,
+                    str(KIT_DIR / "aux_ai_delegate.py"),
+                    "ask",
+                    "--auto",
+                    "--provider",
+                    "gemini",
+                    "--prompt",
+                    "TOKEN=ghp_" + ("A" * 36),
+                    "--context",
+                    str(context),
+                    "--dry-run",
+                ],
+                text=True,
+                capture_output=True,
+                env=env,
+            )
+            self.assertEqual(sensitive_prompt.returncode, 2)
+            self.assertIn("blocked sensitive prompt content", sensitive_prompt.stderr)
+
+            ok = subprocess.run(
+                [
+                    sys.executable,
+                    str(KIT_DIR / "aux_ai_delegate.py"),
+                    "ask",
+                    "--auto",
+                    "--provider",
+                    "gemini",
+                    "--prompt",
+                    "Read-only: summarize likely root cause",
+                    "--context",
+                    str(context),
+                    "--dry-run",
+                ],
+                text=True,
+                capture_output=True,
+                env=env,
+                check=True,
+            )
+            self.assertIn("provider=gemini", ok.stdout)
+
+    def test_aux_delegate_blocks_sensitive_prompt_text_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            write_private_config(config_path, {"aux_ai_enabled": True, "default_provider": "gemini"})
+            env = os.environ.copy()
+            env["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(config_path)
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(KIT_DIR / "aux_ai_delegate.py"),
+                    "ask",
+                    "--prompt",
+                    "password=super-secret-value",
+                    "--dry-run",
+                ],
+                text=True,
+                capture_output=True,
+                env=env,
+            )
+            self.assertEqual(proc.returncode, 2)
+            self.assertIn("blocked sensitive prompt content", proc.stderr)
 
     def test_aux_delegate_ignores_project_command_override_by_default(self):
         with tempfile.TemporaryDirectory() as tmp:

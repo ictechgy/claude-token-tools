@@ -22,14 +22,15 @@ claude-token-setup --plan
    - Bash trim + grep/diff sanitizer hook,
    - large Read guard,
    - missing model/effort defaults,
-   - optional Gemini/Codex auxiliary AI delegation. If enabled, later plugin skills may automatically use it for safe, non-sensitive, project-local read-only triage or long-log analysis; they still must not send blocked paths, secrets, credentials, or customer/private data.
+   - optional Gemini/Codex manual auxiliary AI delegation,
+   - separate optional automatic delegation for safe, non-sensitive, project-local read-only triage or long-log analysis.
 3. If the user wants the recommended project-local setup, run:
 
 ```bash
 claude-token-setup --yes
 ```
 
-4. If they want auxiliary AI too, only enable it after explicit confirmation because selected context may be sent to another provider:
+4. If they want manual auxiliary AI too, only enable it after explicit confirmation because selected context may be sent to another provider:
 
 ```bash
 claude-token-setup --yes --aux-provider gemini
@@ -37,9 +38,19 @@ claude-token-setup --yes --aux-provider gemini
 claude-token-setup --yes --aux-provider codex
 ```
 
+5. If they also want plugin skills to auto-delegate safe read-only context, require an additional explicit opt-in:
+
+```bash
+claude-token-setup --yes --aux-provider gemini --auto-delegate
+# or
+claude-token-setup --yes --aux-provider codex --auto-delegate
+```
+
 Safety:
 
 - Do not modify global `~/.claude/settings.json`.
 - Prefer project-local `.claude/settings.json`.
-- Never enable auxiliary AI implicitly. Enabling it is the user's opt-in for later status-gated safe auto-delegation, not permission to send secrets or policy-sensitive data.
+- Never enable manual auxiliary AI implicitly.
+- Never enable automatic delegation implicitly. Manual delegation enablement is not automatic-delegation consent.
+- Automatic delegation still must not send blocked paths, secrets, credentials, customer/private data, or policy-prohibited proprietary data.
 - After applying, run `claude-token-diet scan .` to show remaining gaps.

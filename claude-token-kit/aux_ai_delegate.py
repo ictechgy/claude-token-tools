@@ -28,6 +28,7 @@ CUSTOM_PROVIDER_ENV = "CLAUDE_TOKEN_OPTIMIZER_ALLOW_CUSTOM_PROVIDER"
 DEFAULT_CONFIG_PATH = Path(".claude-token-optimizer/config.json")
 DEFAULT_DELEGATION_DIR = Path(".claude-token-optimizer/delegations")
 PROMPT_ARG_MAX_CHARS = 100_000
+AUTO_PROMPT_MAX_CHARS = 2_000
 PROVIDER_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 SENSITIVE_CONTEXT_NAMES = {
@@ -79,6 +80,7 @@ PROVIDER_AUTH_ENV_KEYS = {
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "aux_ai_enabled": False,
+    "auto_delegate_enabled": False,
     "default_provider": "gemini",
     "max_output_chars": 4000,
     "context_max_chars": 60000,
@@ -354,6 +356,10 @@ def is_enabled(config: dict[str, Any]) -> bool:
         print(f"warning: refusing enabled delegation from untrusted config: {trust_error}", file=sys.stderr)
         return False
     return True
+
+
+def is_auto_enabled(config: dict[str, Any]) -> bool:
+    return is_enabled(config) and bool(config.get("auto_delegate_enabled", False))
 
 
 def provider_config(config: dict[str, Any], provider: str | None) -> tuple[str, dict[str, Any]]:
@@ -688,6 +694,7 @@ def cmd_status(_: argparse.Namespace) -> int:
     if trust_error:
         print(f"config_trust_error={trust_error}")
     print(f"aux_ai_enabled={str(effective).lower()}")
+    print(f"auto_delegate_enabled={str(effective and bool(config.get('auto_delegate_enabled', False))).lower()}")
     if override is not None:
         print(f"enabled_source=env:{ENABLED_ENV}")
     else:
@@ -738,8 +745,33 @@ def cmd_enable(args: argparse.Namespace) -> int:
 def cmd_disable(_: argparse.Namespace) -> int:
     config = load_config()
     config["aux_ai_enabled"] = False
+    config["auto_delegate_enabled"] = False
     path = save_config(config)
     print(f"disabled auxiliary AI delegation in {path}")
+    return 0
+
+
+def cmd_auto_enable(_: argparse.Namespace) -> int:
+    config = load_config()
+    if not is_enabled(config):
+        print(
+            "manual auxiliary AI delegation must be enabled before automatic delegation. "
+            "Run `claude-token-delegate enable --provider gemini|codex` first.",
+            file=sys.stderr,
+        )
+        return 3
+    config["auto_delegate_enabled"] = True
+    path = save_config(config)
+    print(f"enabled automatic auxiliary AI delegation in {path}")
+    print("auto_delegate_policy=read-only, project-local, non-sensitive context via --context only")
+    return 0
+
+
+def cmd_auto_disable(_: argparse.Namespace) -> int:
+    config = load_config()
+    config["auto_delegate_enabled"] = False
+    path = save_config(config)
+    print(f"disabled automatic auxiliary AI delegation in {path}")
     return 0
 
 
@@ -798,6 +830,13 @@ def cmd_ask(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 3
+    if args.auto and not bool(config.get("auto_delegate_enabled", False)):
+        print(
+            "automatic auxiliary AI delegation is disabled. Run `claude-token-delegate auto-enable` "
+            "after manual delegation is enabled, or delegate explicitly without --auto.",
+            file=sys.stderr,
+        )
+        return 3
 
     provider, item = provider_config(config, args.provider)
     command_template = item.get("command")
@@ -826,6 +865,22 @@ def cmd_ask(args: argparse.Namespace) -> int:
     if not task.strip():
         print("missing prompt; use --prompt, --prompt-file, or stdin", file=sys.stderr)
         return 2
+    if contains_sensitive_content(task):
+        print(
+            "blocked sensitive prompt content; keep --prompt to a short instruction and pass files/logs via --context",
+            file=sys.stderr,
+        )
+        return 2
+    if args.auto:
+        if args.prompt_file or not args.prompt:
+            print("automatic delegation requires a short --prompt instruction, not stdin or --prompt-file", file=sys.stderr)
+            return 2
+        if len(task) > AUTO_PROMPT_MAX_CHARS:
+            print(f"automatic delegation prompt must be <= {AUTO_PROMPT_MAX_CHARS} characters", file=sys.stderr)
+            return 2
+        if not args.context:
+            print("automatic delegation requires at least one helper-validated --context file", file=sys.stderr)
+            return 2
 
     max_output_chars = (
         args.max_output_chars if args.max_output_chars is not None else int(config.get("max_output_chars") or 4000)
@@ -838,6 +893,18 @@ def cmd_ask(args: argparse.Namespace) -> int:
     )
     contexts, context_warnings = read_contexts(args.context or [], context_max_chars, allow_sensitive, allow_outside)
     warnings.extend(context_warnings)
+    if args.auto:
+        if context_warnings:
+            print(
+                "automatic delegation refused blocked context; review policy or delegate explicitly after verification",
+                file=sys.stderr,
+            )
+            for warning in context_warnings:
+                print(f"warning: {warning}", file=sys.stderr)
+            return 2
+        if not contexts:
+            print("automatic delegation requires at least one readable --context file", file=sys.stderr)
+            return 2
     prompt = build_aux_prompt(task, contexts, max_output_chars)
     uses_prompt_arg = any("{prompt}" in part for part in command_template)
     if not item.get("stdin", False) and not uses_prompt_arg:
@@ -918,8 +985,19 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("disable", help="Disable auxiliary AI delegation")
     p.set_defaults(func=cmd_disable)
 
+    p = sub.add_parser("auto-enable", help="Allow enabled plugin skills to use safe automatic delegation")
+    p.set_defaults(func=cmd_auto_enable)
+
+    p = sub.add_parser("auto-disable", help="Disable automatic delegation while keeping explicit delegation available")
+    p.set_defaults(func=cmd_auto_disable)
+
     p = sub.add_parser("ask", help="Ask the enabled auxiliary AI and print a bounded preview")
     p.add_argument("--provider", help="Provider to use")
+    p.add_argument(
+        "--auto",
+        action="store_true",
+        help="Mark this as skill-initiated automatic delegation; requires auto-enable and validated --context",
+    )
     prompt_group = p.add_mutually_exclusive_group()
     prompt_group.add_argument("--prompt", help="Prompt text")
     prompt_group.add_argument("--prompt-file", help="Read prompt text from file")

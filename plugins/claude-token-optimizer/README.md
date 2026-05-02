@@ -43,7 +43,7 @@ claude-token-delegate disable
 
 `claude-token-audit --recommend` anonymizes transcript paths and command strings by default (`basename#hash`, `command#hash`). Use `--show-paths` or `--show-commands` only for local/private reports.
 
-`claude-token-setup` is the post-install wizard. Prefer `/claude-token-optimizer:setup` inside Claude Code. In a normal terminal, run `./plugins/claude-token-optimizer/bin/claude-token-setup --plan` from this repository root, or use `claude-token-setup --plan` only after adding the plugin bin directory to `PATH`. It merges `.claude/settings.json` instead of replacing it, and it never enables auxiliary Gemini/Codex delegation unless selected explicitly with `--aux-provider gemini|codex`.
+`claude-token-setup` is the post-install wizard. Prefer `/claude-token-optimizer:setup` inside Claude Code. In a normal terminal, run `./plugins/claude-token-optimizer/bin/claude-token-setup --plan` from this repository root, or use `claude-token-setup --plan` only after adding the plugin bin directory to `PATH`. It merges `.claude/settings.json` instead of replacing it, never enables manual Gemini/Codex delegation unless selected explicitly with `--aux-provider gemini|codex`, and never enables automatic delegation unless `--auto-delegate` is also provided.
 
 `claude-token-diet scan` is a local read-only scanner for project Claude settings and context bloat. It checks missing `permissions.deny` guardrails, Bash trim hook/statusline setup, broad read allows, high default model/effort, many MCP servers, and large/secret-like `CLAUDE.md` or `AGENTS.md` context files. It anonymizes the project root by default; use `--show-paths` only for local/private reports.
 
@@ -87,14 +87,14 @@ For marketplace testing:
 claude-token-delegate status
 claude-token-delegate enable --provider gemini
 claude-token-delegate enable --provider codex
+claude-token-delegate auto-enable
 claude-token-delegate ask --provider codex --prompt "Find the likely files to inspect" --context ./error.log
 claude-token-delegate disable
 ```
 
 Only delegate context you are allowed to share with that external provider. The helper prints a bounded, untrusted preview to Claude and saves the full untrusted auxiliary response locally.
 
-After delegation is enabled, plugin skills may use it automatically for safe read-only cases that would otherwise load large context into Claude, such as long logs, broad file triage, root-cause hypotheses, or second-opinion planning. They still check status first, keep context minimal, avoid blocked/sensitive/customer data, and verify auxiliary output before acting.
-
+Automatic delegation is separate from manual delegation. Use `claude-token-delegate auto-enable` only after manual delegation is enabled and only when plugin skills may share non-sensitive project-local source/log context with the selected provider. Automatic calls use `--auto`, require helper-validated `--context`, keep `--prompt` to a short read-only instruction, avoid blocked/sensitive/customer/policy-prohibited data, and verify auxiliary output before acting.
 
 Delegation allows project-root context files by default and blocks outside-project paths, obvious secret-like paths, and credential-like file contents. If policy review approves sharing a blocked file with the selected provider, allow only that exact path in the trusted private config `context_policy`; there is no CLI bypass flag. Saved responses are written under `.claude-token-optimizer/` with private file permissions and a private `.gitignore`.
 
