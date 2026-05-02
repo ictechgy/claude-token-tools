@@ -5,7 +5,7 @@ Claude Code CLI token 절감을 위한 실험용 도구 모음입니다. 전부 
 ## 구성
 
 - `statusline.sh` — context/cost/model을 status line에 표시
-- `trim_command_output.py` — 긴 명령 output을 head/tail/error 중심으로 축약하고 원래 exit code 보존
+- `trim_command_output.py` — 긴 명령 output을 head/tail/error 및 pytest/Jest/Vitest/Go/Rust 실패 요약 중심으로 축약하고 원래 exit code 보존
 - `rewrite_bash_for_token_budget.py` — Claude Code `PreToolUse` hook에서 test/build/lint 명령을 wrapper로 감쌈
 - `claude_transcript_cost_audit.py` — `~/.claude/projects` JSONL transcript에서 usage/cost field를 찾아 합산하고 `--recommend`로 절감 액션 제안
 - `settings.example.json` — project `.claude/settings.json` 예시
@@ -15,12 +15,15 @@ Claude Code CLI token 절감을 위한 실험용 도구 모음입니다. 전부 
 
 ```bash
 python3 claude-token-kit/trim_command_output.py --max-lines 80 -- bash -lc 'seq 1 1000; echo FAIL test_x >&2; exit 1'
+python3 claude-token-kit/trim_command_output.py --max-lines 80 -- pytest tests -q
 python3 claude-token-kit/claude_transcript_cost_audit.py ~/.claude/projects --top 10 --recommend
 python3 claude-token-kit/aux_ai_delegate.py status
 python3 claude-token-kit/aux_ai_delegate.py enable --provider gemini
 python3 claude-token-kit/aux_ai_delegate.py ask --provider gemini --prompt "Summarize this log" --context ./log.txt
 python3 claude-token-kit/aux_ai_delegate.py disable
 ```
+
+`trim_command_output.py`는 output이 budget을 넘을 때 runner별 failure summary를 먼저 보여줍니다. 예를 들어 pytest node id, Jest/Vitest 실패 파일/테스트, `go test`의 실패 test와 `_test.go:line`, `cargo test` panic 위치를 짧게 보존해 Claude가 전체 로그를 다시 읽지 않아도 다음 수정 파일을 고를 수 있게 합니다. ANSI color code는 제거하고, 절대경로는 기본적으로 `basename#path:<hash>`로 익명화합니다. 로컬 디버깅에서 원문 절대경로가 꼭 필요하면 `--show-paths`를 추가하세요.
 
 `claude_transcript_cost_audit.py --recommend`의 기본 출력은 공유 안전성을 위해 transcript 경로를 `basename#hash`, 명령을 `command#hash` 형태로 익명화합니다. 로컬 원문 식별자가 꼭 필요할 때만 `--show-paths` 또는 `--show-commands`를 추가하세요.
 

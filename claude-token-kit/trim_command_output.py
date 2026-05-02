@@ -8,16 +8,53 @@ from __future__ import annotations
 
 import argparse
 import collections
+import hashlib
+from pathlib import PurePosixPath
 import re
 import subprocess
 import sys
 from typing import Iterable
 
+MAX_SUMMARY_ITEM_CHARS = 500
+
+ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+ABSOLUTE_PATH_RE = re.compile(r"(?P<prefix>^|[\s('\"=])(?P<path>/(?:[^\s:(),]+/)*[^\s:(),]+)")
 ERROR_RE = re.compile(
     r"(FAIL|FAILED|ERROR|Error:|Exception|Traceback|AssertionError|panic:|fatal:|"
     r"segmentation fault|not ok|\bE\s+assert|\[ERROR\]|✗|✖)",
     re.IGNORECASE,
 )
+PYTEST_RESULT_RE = re.compile(r"^(?P<kind>FAILED|ERROR)\s+(?P<node>\S+)(?:\s+-\s+(?P<reason>.*))?$")
+PYTEST_LOCATION_RE = re.compile(r"^(?P<file>[^:\s][^:\n]*\.py):(?P<line>\d+):(?P<message>.*)$")
+JEST_FILE_RE = re.compile(
+    r"^\s*FAIL\s+(?P<file>\S+(?:\.(?:test|spec)\.[cm]?[jt]sx?|__tests__/\S+\.[cm]?[jt]sx?))"
+    r"(?:\s+>\s+(?P<name>.+))?\s*$"
+)
+JEST_TEST_RE = re.compile(r"^\s*[●✕×]\s+(?P<name>.+?)\s*$")
+JEST_AT_RE = re.compile(
+    r"^\s*at\s+(?:.+?\s+\()?(?P<file>[^()\s]+?\.[cm]?[jt]sx?):(?P<line>\d+):(?P<col>\d+)\)?\s*$"
+)
+VITEST_LOCATION_RE = re.compile(r"^\s*❯\s+(?P<file>[^()\s]+?\.[cm]?[jt]sx?):(?P<line>\d+):(?P<col>\d+)\s*$")
+GO_FAIL_RE = re.compile(r"^--- FAIL: (?P<name>\S+)(?:\s+\([^)]+\))?")
+GO_LOCATION_RE = re.compile(r"^\s*(?P<file>[^:\s]+_test\.go):(?P<line>\d+):\s*(?P<message>.*)$")
+RUST_THREAD_RE = re.compile(
+    r"^thread '(?P<name>[^']+)' panicked at (?:.*,\s+)?(?P<file>[^,\n]+?\.rs):(?P<line>\d+):(?P<col>\d+):?"
+)
+
+
+def strip_ansi(text: str) -> str:
+    return ANSI_RE.sub("", text)
+
+
+def anonymize_absolute_paths(text: str) -> str:
+    def repl(match: re.Match[str]) -> str:
+        prefix = match.group("prefix")
+        path = match.group("path")
+        name = PurePosixPath(path).name or "path"
+        digest = hashlib.sha256(path.encode("utf-8", "replace")).hexdigest()[:12]
+        return f"{prefix}{name}#path:{digest}"
+
+    return ABSOLUTE_PATH_RE.sub(repl, text)
 
 
 def unique_keep_order(lines: Iterable[str]) -> list[str]:
@@ -49,6 +86,123 @@ def cap_text(text: str, max_chars: int) -> tuple[str, bool]:
     return text[:keep].rstrip() + marker, True
 
 
+def compact_item(text: str, limit: int = MAX_SUMMARY_ITEM_CHARS, *, show_paths: bool = False) -> str:
+    """Normalize a failure-summary item without letting one log line dominate memory/output."""
+    item = re.sub(r"\s+", " ", strip_ansi(text).strip())
+    if not show_paths:
+        item = anonymize_absolute_paths(item)
+    if len(item) <= limit:
+        return item
+    marker = f"...[item trimmed: {len(item)} chars]"
+    keep = max(0, limit - len(marker))
+    return item[:keep] + marker
+
+
+class RunnerFailureSummary:
+    """Bounded, runner-aware extraction of the most actionable failure lines.
+
+    The extractor is intentionally online and stores only a small de-duplicated
+    set of findings. That keeps the wrapper useful for huge logs without
+    retaining the whole command output in memory.
+    """
+
+    def __init__(self, max_items_per_runner: int, *, show_paths: bool = False) -> None:
+        self.max_items_per_runner = max(0, max_items_per_runner)
+        self.show_paths = show_paths
+        self.items: dict[str, list[str]] = collections.defaultdict(list)
+        self.seen: dict[str, set[str]] = collections.defaultdict(set)
+        self.jest_active = False
+        self.go_failed_seen = False
+
+    def add(self, runner: str, item: str) -> None:
+        if self.max_items_per_runner <= 0:
+            return
+        compact = compact_item(item, show_paths=self.show_paths)
+        if not compact or compact in self.seen[runner]:
+            return
+        if len(self.items[runner]) >= self.max_items_per_runner:
+            return
+        self.items[runner].append(compact)
+        self.seen[runner].add(compact)
+
+    def feed(self, line: str) -> None:
+        if self.max_items_per_runner <= 0:
+            return
+
+        stripped = strip_ansi(line.rstrip("\n"))
+
+        match = PYTEST_RESULT_RE.match(stripped)
+        if match and (".py" in match.group("node") or "::" in match.group("node")):
+            reason = compact_item(match.group("reason") or "", show_paths=self.show_paths)
+            if reason:
+                self.add("pytest", f"{match.group('kind')} {match.group('node')} - {reason}")
+            else:
+                self.add("pytest", f"{match.group('kind')} {match.group('node')}")
+
+        match = PYTEST_LOCATION_RE.match(stripped)
+        if match and ERROR_RE.search(stripped):
+            self.add("pytest", f"{match.group('file')}:{match.group('line')}: {match.group('message').strip()}")
+
+        match = JEST_FILE_RE.match(stripped)
+        if match:
+            self.jest_active = True
+            self.add("jest/vitest", f"FAIL {match.group('file')}")
+            if match.group("name"):
+                self.add("jest/vitest", f"test {match.group('name')}")
+
+        if self.jest_active:
+            match = JEST_TEST_RE.match(stripped)
+            if match:
+                self.add("jest/vitest", f"test {match.group('name')}")
+
+            match = JEST_AT_RE.match(stripped)
+            if match:
+                self.add("jest/vitest", f"{match.group('file')}:{match.group('line')}:{match.group('col')}")
+
+            match = VITEST_LOCATION_RE.match(stripped)
+            if match:
+                self.add("jest/vitest", f"{match.group('file')}:{match.group('line')}:{match.group('col')}")
+
+        match = GO_FAIL_RE.match(stripped)
+        if match:
+            self.go_failed_seen = True
+            self.add("go test", f"FAIL {match.group('name')}")
+
+        match = GO_LOCATION_RE.match(stripped)
+        if self.go_failed_seen and match:
+            message = match.group("message").strip()
+            suffix = f": {message}" if message else ""
+            self.add("go test", f"{match.group('file')}:{match.group('line')}{suffix}")
+
+        match = RUST_THREAD_RE.match(stripped)
+        if match:
+            self.add(
+                "cargo test",
+                f"{match.group('name')} at {match.group('file')}:{match.group('line')}:{match.group('col')}",
+            )
+
+    def as_lines(self, max_line_chars: int, max_lines: int) -> list[str]:
+        if not self.items:
+            return []
+        if max_lines <= 0:
+            return []
+        out = ["\n--- runner failure summary ---\n"]
+        used_lines = len(out[0].splitlines())
+        for runner in sorted(self.items):
+            runner_line = f"runner={runner}\n"
+            if used_lines + 1 > max_lines:
+                break
+            out.append(runner_line)
+            used_lines += 1
+            for item in self.items[runner]:
+                if used_lines + 1 > max_lines:
+                    break
+                line, _ = cap_line(f"- {item}\n", max_line_chars)
+                out.append(line)
+                used_lines += 1
+        return out
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--max-lines", type=int, default=220)
@@ -57,6 +211,17 @@ def main() -> int:
     parser.add_argument("--head-lines", type=int, default=40)
     parser.add_argument("--tail-lines", type=int, default=80)
     parser.add_argument("--error-lines", type=int, default=120)
+    parser.add_argument(
+        "--runner-summary-items",
+        type=int,
+        default=12,
+        help="maximum runner-specific failure facts to keep per detected runner (0 disables)",
+    )
+    parser.add_argument(
+        "--show-paths",
+        action="store_true",
+        help="show raw absolute paths in output instead of anonymizing them as basename#path:<hash>",
+    )
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
 
@@ -88,6 +253,7 @@ def main() -> int:
     raw_chars = 0
     visible_chars = 0
     any_line_capped = False
+    runner_summary = RunnerFailureSummary(args.runner_summary_items, show_paths=args.show_paths)
 
     if proc.stdout is None:
         print("trim_command_output.py: subprocess produced no stdout pipe", file=sys.stderr)
@@ -95,7 +261,8 @@ def main() -> int:
     for line in proc.stdout:
         total += 1
         raw_chars += len(line)
-        visible_line, line_capped = cap_line(line, args.max_line_chars)
+        visible_source = strip_ansi(line) if args.show_paths else anonymize_absolute_paths(strip_ansi(line))
+        visible_line, line_capped = cap_line(visible_source, args.max_line_chars)
         any_line_capped = any_line_capped or line_capped
         visible_chars += len(visible_line)
         if total <= args.head_lines:
@@ -103,6 +270,7 @@ def main() -> int:
         tail.append(visible_line)
         if ERROR_RE.search(line) and len(error_lines) < args.error_lines:
             error_lines.append(visible_line)
+        runner_summary.feed(line)
         if total <= args.max_lines:
             all_lines.append(visible_line)
 
@@ -126,13 +294,25 @@ def main() -> int:
         parts.append(f"[claude-token-kit] command exit_code={rc}\n")
         if any_line_capped:
             parts.append(f"[claude-token-kit] one or more lines were capped at {args.max_line_chars} chars\n")
+        summary_budget = max(0, min(args.max_lines, max(4, args.max_lines // 3))) if args.max_lines > 0 else 0
+        runner_lines = runner_summary.as_lines(args.max_line_chars, summary_budget) if rc != 0 else []
+        summary_line_count = len("".join(runner_lines).splitlines())
+        remaining_log_budget = max(0, args.max_lines - summary_line_count)
+
+        parts.extend(runner_lines)
         parts.append("\n--- head ---\n")
-        parts.extend(head_out)
+        if remaining_log_budget > 0:
+            head_out = head_out[:remaining_log_budget]
+            parts.extend(head_out)
+            remaining_log_budget -= len(head_out)
         if error_out:
             parts.append("\n--- matched error/failure lines ---\n")
+            error_out = error_out[:remaining_log_budget]
             parts.extend(error_out)
+            remaining_log_budget -= len(error_out)
         parts.append("\n--- tail ---\n")
-        parts.extend(tail_out)
+        if remaining_log_budget > 0:
+            parts.extend(tail_out[:remaining_log_budget])
         parts.append("\n[claude-token-kit] rerun the command without trim only if more context is essential.\n")
         output, capped = cap_text("".join(parts), args.max_chars)
         if capped:

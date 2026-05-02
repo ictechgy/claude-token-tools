@@ -22,6 +22,7 @@ IMPLEMENTATION_PAIRS = [
     (KIT_DIR / "trim_command_output.py", PLUGIN_BIN / "claude-trim-output"),
     (KIT_DIR / "statusline.sh", PLUGIN_BIN / "claude-token-statusline"),
 ]
+TRIM_SCRIPTS = [KIT_DIR / "trim_command_output.py", PLUGIN_BIN / "claude-trim-output"]
 
 
 def run_hook(script: Path, command: str, cwd: Path = ROOT) -> subprocess.CompletedProcess[str]:
@@ -46,6 +47,14 @@ def load_aux_module():
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
+
+
+def run_trim_python(script: Path, code: str, *, max_lines: int = 18, extra_args: list[str] | None = None) -> subprocess.CompletedProcess[str]:
+    args = [sys.executable, str(script), "--max-lines", str(max_lines)]
+    if extra_args:
+        args.extend(extra_args)
+    args.extend(["--", sys.executable, "-c", code])
+    return subprocess.run(args, text=True, capture_output=True)
 
 
 def write_private_config(path: Path, data: dict) -> None:
@@ -110,6 +119,133 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 127)
         self.assertIn("command failed to start", proc.stderr)
         self.assertNotIn("Traceback", proc.stderr)
+
+    def test_trim_extracts_pytest_failure_summary_from_long_logs(self):
+        code = (
+            "import sys; "
+            "[print(f'noise {i}') for i in range(90)]; "
+            "print('\\x1b[31mFAILED\\x1b[0m tests/test_auth.py::test_expired_token - AssertionError: expired'); "
+            "print('tests/test_auth.py:42: AssertionError: expired'); "
+            "sys.exit(1)"
+        )
+        for script in TRIM_SCRIPTS:
+            with self.subTest(script=script):
+                proc = run_trim_python(script, code)
+                self.assertEqual(proc.returncode, 1)
+                self.assertIn("--- runner failure summary ---", proc.stdout)
+                self.assertIn("runner=pytest", proc.stdout)
+                self.assertIn("tests/test_auth.py::test_expired_token", proc.stdout)
+                self.assertIn("tests/test_auth.py:42", proc.stdout)
+                self.assertNotIn("\x1b[31m", proc.stdout)
+                self.assertLess(len(proc.stdout.splitlines()), 45)
+
+    def test_trim_extracts_go_test_failure_summary_from_long_logs(self):
+        proc = run_trim_python(
+            KIT_DIR / "trim_command_output.py",
+            (
+                "import sys; "
+                "[print(f'compile noise {i}') for i in range(80)]; "
+                "print('--- FAIL: TestWidgetRejectsBadInput (0.01s)'); "
+                "print('    widget_test.go:42: got false, want true'); "
+                "print('FAIL'); "
+                "sys.exit(1)"
+            ),
+        )
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("--- runner failure summary ---", proc.stdout)
+        self.assertIn("runner=go test", proc.stdout)
+        self.assertIn("TestWidgetRejectsBadInput", proc.stdout)
+        self.assertIn("widget_test.go:42", proc.stdout)
+        self.assertLess(len(proc.stdout.splitlines()), 45)
+
+    def test_trim_extracts_jest_and_cargo_failure_summaries(self):
+        code = (
+            "import sys; "
+            "[print(f'noise {i}') for i in range(80)]; "
+            "print('FAIL src/__tests__/auth.js'); "
+            "print('  ● rejects expired tokens'); "
+            "print('    at Object.<anonymous> (src/__tests__/auth.js:12:5)'); "
+            "print(\"thread 'tests::rejects' panicked at 'missing config.rs', /Users/alice/project/src/lib.rs:10:5:\"); "
+            "[print(f'tail noise {i}') for i in range(80)]; "
+            "sys.exit(1)"
+        )
+        proc = run_trim_python(KIT_DIR / "trim_command_output.py", code, max_lines=24)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("runner=jest/vitest", proc.stdout)
+        self.assertIn("FAIL src/__tests__/auth.js", proc.stdout)
+        self.assertIn("rejects expired tokens", proc.stdout)
+        self.assertIn("src/__tests__/auth.js:12:5", proc.stdout)
+        self.assertIn("runner=cargo test", proc.stdout)
+        self.assertRegex(proc.stdout, r"lib\.rs#path:[0-9a-f]{12}:10:5")
+        self.assertNotIn("/Users/alice", proc.stdout)
+
+    def test_trim_extracts_vitest_standard_failure_lines(self):
+        proc = run_trim_python(
+            KIT_DIR / "trim_command_output.py",
+            (
+                "import sys; "
+                "[print(f'noise {i}') for i in range(80)]; "
+                "print('FAIL  src/basic.test.ts > suite > test name'); "
+                "print('❯ src/basic.test.ts:3:10'); "
+                "sys.exit(1)"
+            ),
+        )
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("runner=jest/vitest", proc.stdout)
+        self.assertIn("FAIL src/basic.test.ts", proc.stdout)
+        self.assertIn("test suite > test name", proc.stdout)
+        self.assertIn("src/basic.test.ts:3:10", proc.stdout)
+
+    def test_trim_avoids_stateless_runner_false_positives(self):
+        proc = run_trim_python(
+            KIT_DIR / "trim_command_output.py",
+            (
+                "import sys; "
+                "[print(f'noise {i}') for i in range(80)]; "
+                "print('  ● markdown bullet, not a test'); "
+                "print('    at src/example.ts:1:2'); "
+                "print('    widget_test.go:42: verbose location without go failure'); "
+                "print('---- harmless stdout ----'); "
+                "sys.exit(1)"
+            ),
+        )
+        self.assertEqual(proc.returncode, 1)
+        self.assertNotIn("--- runner failure summary ---", proc.stdout)
+        self.assertNotIn("runner=jest/vitest", proc.stdout)
+        self.assertNotIn("runner=go test", proc.stdout)
+        self.assertNotIn("runner=cargo test", proc.stdout)
+
+    def test_trim_suppresses_runner_summary_when_command_succeeds(self):
+        proc = run_trim_python(
+            KIT_DIR / "trim_command_output.py",
+            (
+                "import sys; "
+                "[print(f'noise {i}') for i in range(80)]; "
+                "print('--- FAIL: TestMisleadingButSuccessful (0.01s)'); "
+                "print('    widget_test.go:42: noisy'); "
+                "print('FAIL src/__tests__/auth.js'); "
+                "print('  ● noisy test-like marker'); "
+                "[print(f'tail noise {i}') for i in range(80)]"
+            ),
+        )
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("output trimmed", proc.stdout)
+        self.assertNotIn("--- runner failure summary ---", proc.stdout)
+
+    def test_trim_runner_summary_can_be_disabled(self):
+        proc = run_trim_python(
+            KIT_DIR / "trim_command_output.py",
+            (
+                "import sys; "
+                "[print(f'noise {i}') for i in range(80)]; "
+                "print('FAILED tests/test_auth.py::test_expired_token - AssertionError: expired'); "
+                "print('tests/test_auth.py:42: AssertionError: expired'); "
+                "sys.exit(1)"
+            ),
+            extra_args=["--runner-summary-items", "0"],
+        )
+        self.assertEqual(proc.returncode, 1)
+        self.assertNotIn("--- runner failure summary ---", proc.stdout)
 
     def test_rewrite_hook_wraps_safe_pytest_for_kit_and_plugin(self):
         for script in [KIT_REWRITE, PLUGIN_REWRITE]:
