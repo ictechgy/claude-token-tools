@@ -130,3 +130,5 @@ Claude Code 안에서:
 ```
 
 보조 AI에는 선택한 context가 외부 provider로 전송될 수 있습니다. secrets, 고객 데이터, 사내 비공개 자료는 정책상 허용될 때만 위임하세요. 전체 보조 AI 응답은 `.claude-token-optimizer/` 아래에 저장되고, Claude에는 짧은 preview만 출력됩니다.
+
+delegation을 켜 둔 뒤에는 plugin skill이 긴 로그 요약, 넓은 파일 triage, 원인 가설 생성, second-opinion planning처럼 Claude context를 크게 쓸 read-only 작업에 자동으로 사용할 수 있습니다. 그래도 먼저 `claude-token-delegate status`로 opt-in 상태를 확인하고, blocked/sensitive/customer data는 보내지 않으며, 보조 AI 출력은 검증 전까지 untrusted로 취급해야 합니다.

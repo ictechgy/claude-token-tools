@@ -22,7 +22,7 @@ claude-token-setup --plan
    - Bash trim + grep/diff sanitizer hook,
    - large Read guard,
    - missing model/effort defaults,
-   - optional Gemini/Codex auxiliary AI delegation.
+   - optional Gemini/Codex auxiliary AI delegation. If enabled, later plugin skills may automatically use it for safe, non-sensitive, project-local read-only triage or long-log analysis; they still must not send blocked paths, secrets, credentials, or customer/private data.
 3. If the user wants the recommended project-local setup, run:
 
 ```bash
@@ -41,5 +41,5 @@ Safety:
 
 - Do not modify global `~/.claude/settings.json`.
 - Prefer project-local `.claude/settings.json`.
-- Never enable auxiliary AI implicitly.
+- Never enable auxiliary AI implicitly. Enabling it is the user's opt-in for later status-gated safe auto-delegation, not permission to send secrets or policy-sensitive data.
 - After applying, run `claude-token-diet scan .` to show remaining gaps.

@@ -93,6 +93,8 @@ claude-token-delegate disable
 
 Only delegate context you are allowed to share with that external provider. The helper prints a bounded, untrusted preview to Claude and saves the full untrusted auxiliary response locally.
 
+After delegation is enabled, plugin skills may use it automatically for safe read-only cases that would otherwise load large context into Claude, such as long logs, broad file triage, root-cause hypotheses, or second-opinion planning. They still check status first, keep context minimal, avoid blocked/sensitive/customer data, and verify auxiliary output before acting.
+
 
 Delegation allows project-root context files by default and blocks outside-project paths, obvious secret-like paths, and credential-like file contents. If policy review approves sharing a blocked file with the selected provider, allow only that exact path in the trusted private config `context_policy`; there is no CLI bypass flag. Saved responses are written under `.claude-token-optimizer/` with private file permissions and a private `.gitignore`.
 

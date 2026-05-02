@@ -60,6 +60,8 @@ python3 claude-token-kit/aux_ai_delegate.py disable
 
 외부 provider로 파일 내용이 전송될 수 있으므로 secrets/private data는 보내지 마세요. 보조 AI의 preview와 저장된 전체 응답은 모두 검증 전까지 untrusted output으로 취급하세요.
 
+활성화 후에는 상위 plugin skill이 긴 로그, 넓은 파일 triage, 원인 가설 생성처럼 안전한 read-only 후보에 자동으로 위임할 수 있습니다. 단, 자동 위임은 status 확인 후에만 수행하며, blocked path나 secret/customer data는 계속 제외해야 합니다.
+
 
 보조 AI 위임은 기본적으로 project root 아래 파일만 context로 허용하고, outside-project paths, `.env*`, key 파일, token/secret 이름 파일, credential-like content를 차단합니다. 정책 검토 후 필요한 경우에만 trusted private config의 `context_policy`로 차단된 exact path를 명시적으로 allow하세요. CLI flag로 차단을 우회할 수는 없습니다. 전체 보조 AI 응답은 `.claude-token-optimizer/` 아래에 `0600` 파일로 저장되며, 도구가 해당 private state 디렉터리에 `.gitignore`를 자동 생성합니다.
 

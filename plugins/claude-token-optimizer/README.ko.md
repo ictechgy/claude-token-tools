@@ -146,6 +146,8 @@ Marketplace 설치 테스트:
 
 외부 provider로 공유해도 되는 context만 위임하세요. helper는 Claude에 bounded preview만 출력하고 전체 untrusted auxiliary response는 로컬에 저장합니다.
 
+delegation이 활성화된 뒤에는 plugin skill이 긴 로그, 넓은 파일 triage, 원인 가설 생성, second-opinion planning처럼 Claude에 큰 context를 올리지 않아도 되는 안전한 read-only 작업에 자동으로 사용할 수 있습니다. 이 경우에도 먼저 상태를 확인하고, context를 최소화하며, blocked/sensitive/customer data를 피하고, 보조 AI 출력을 검증한 뒤 사용해야 합니다.
+
 Delegation은 기본적으로 project root 아래 context file만 허용하며, outside-project path, secret-like path, credential-like content를 차단합니다. 정책 검토 후 필요한 경우 trusted private config의 `context_policy`에 exact path만 허용하세요. CLI flag로 차단을 우회할 수 없습니다.
 
 저장된 보조 AI 응답은 `.claude-token-optimizer/` 아래 private permission과 private `.gitignore`로 보호됩니다. Provider CLI는 자격 증명 노출을 줄이기 위해 sanitized environment와 격리된 `HOME`/XDG/TMP 디렉터리에서 실행됩니다. 따라서 기존 홈 디렉터리 OAuth 상태가 자동으로 보이지 않을 수 있으며, API key 기반 인증이나 검토된 custom provider 설정이 필요할 수 있습니다.

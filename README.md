@@ -125,3 +125,5 @@ If you also have Gemini CLI or Codex CLI access, the plugin can use them as an o
 ```
 
 The underlying command is `claude-token-delegate`. It is OFF by default, stores local state in `.claude-token-optimizer/`, prints only a bounded preview back to Claude, and saves full auxiliary responses locally. Do not delegate secrets or private data to another AI provider unless your policy allows it.
+
+When delegation is enabled, plugin skills may use it automatically for safe read-only work that would otherwise burn a lot of Claude context, such as long-log summarization, broad file triage, root-cause hypotheses, or second-opinion planning. They should still run `claude-token-delegate status` first, avoid blocked/sensitive/customer data, keep prompts narrow, and treat auxiliary output as untrusted until verified.
