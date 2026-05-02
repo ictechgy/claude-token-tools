@@ -133,4 +133,4 @@ Claude Code 안에서:
 
 보조 AI에는 선택한 context가 외부 provider로 전송될 수 있습니다. secrets, 고객 데이터, 사내 비공개 자료는 정책상 허용될 때만 위임하세요. 전체 보조 AI 응답은 `.claude-token-optimizer/` 아래에 저장되고, Claude에는 짧은 preview만 출력됩니다.
 
-자동 위임은 별도 opt-in입니다. 수동 delegation을 켠 뒤 `claude-token-delegate auto-enable`을 실행해야 plugin skill이 긴 로그 요약, 넓은 파일 triage, 원인 가설 생성, second-opinion planning처럼 Claude context를 크게 쓸 read-only 작업에 자동 위임할 수 있습니다. 자동 호출은 helper가 검증한 `--context` 파일을 사용하고, `--prompt`에는 짧은 지시만 넣으며, blocked/sensitive/customer/policy-prohibited data를 피하고, 보조 AI 출력은 검증 전까지 untrusted로 취급해야 합니다.
+자동 위임은 provider에 묶이는 별도 opt-in입니다. 수동 delegation을 켠 뒤 `claude-token-delegate auto-enable`을 실행해야 plugin skill이 현재/default provider로 긴 로그 요약, 넓은 파일 triage, 원인 가설 생성, second-opinion planning처럼 Claude context를 크게 쓸 read-only 작업에 자동 위임할 수 있습니다. 자동 호출은 `--provider`를 생략해 helper가 승인된 provider만 쓰게 하고, helper가 검증한 `--context` 파일을 사용하며, `--prompt`에는 짧은 지시만 넣고, blocked/sensitive/customer/policy-prohibited data를 피하고, 보조 AI 출력은 검증 전까지 untrusted로 취급해야 합니다.

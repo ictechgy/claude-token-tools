@@ -398,6 +398,20 @@ class ClaudeTokenKitTests(unittest.TestCase):
             )
             self.assertNotEqual(invalid.returncode, 0)
             self.assertIn("--auto-delegate requires --aux-provider", invalid.stderr)
+            invalid_plan = subprocess.run(
+                [
+                    sys.executable,
+                    str(KIT_DIR / "setup_wizard.py"),
+                    "--root",
+                    str(root),
+                    "--plan",
+                    "--auto-delegate",
+                ],
+                text=True,
+                capture_output=True,
+            )
+            self.assertNotEqual(invalid_plan.returncode, 0)
+            self.assertIn("--auto-delegate requires --aux-provider", invalid_plan.stderr)
 
             proc = subprocess.run(
                 [
@@ -422,6 +436,41 @@ class ClaudeTokenKitTests(unittest.TestCase):
             config = json.loads(config_path.read_text(encoding="utf-8"))
             self.assertTrue(config["aux_ai_enabled"])
             self.assertTrue(config["auto_delegate_enabled"])
+            self.assertEqual(config["auto_delegate_provider"], "gemini")
+
+    def test_setup_wizard_provider_change_clears_stale_auto_delegate_consent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / ".claude-token-optimizer"
+            state.mkdir()
+            config_path = state / "config.json"
+            write_private_config(config_path, {
+                "aux_ai_enabled": True,
+                "auto_delegate_enabled": True,
+                "auto_delegate_provider": "gemini",
+                "default_provider": "gemini",
+            })
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(KIT_DIR / "setup_wizard.py"),
+                    "--root",
+                    str(root),
+                    "--yes",
+                    "--aux-provider",
+                    "codex",
+                    "--json",
+                ],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            self.assertTrue(json.loads(proc.stdout)["applied"])
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertTrue(config["aux_ai_enabled"])
+            self.assertFalse(config["auto_delegate_enabled"])
+            self.assertNotIn("auto_delegate_provider", config)
+            self.assertEqual(config["default_provider"], "codex")
 
     def test_setup_wizard_refuses_global_home_settings(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1485,6 +1534,47 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         check=True,
                     )
                     self.assertIn("auto_delegate_enabled=true", status.stdout)
+                    self.assertIn("auto_delegate_provider=gemini", status.stdout)
+
+                    provider_mismatch = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "ask",
+                            "--auto",
+                            "--provider",
+                            "codex",
+                            "--prompt",
+                            "Read-only: summarize",
+                            "--context",
+                            str(ctx),
+                            "--dry-run",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertEqual(provider_mismatch.returncode, 2)
+                    self.assertIn("approved only for provider 'gemini'", provider_mismatch.stderr)
+
+                    auto_default_provider = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "ask",
+                            "--auto",
+                            "--prompt",
+                            "Read-only: summarize",
+                            "--context",
+                            str(ctx),
+                            "--dry-run",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                        check=True,
+                    )
+                    self.assertIn("provider=gemini", auto_default_provider.stdout)
 
                     auto_disable = subprocess.run(
                         [sys.executable, str(script), "auto-disable"],
@@ -1497,76 +1587,152 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     config = json.loads(config_path.read_text(encoding="utf-8"))
                     self.assertTrue(config["aux_ai_enabled"])
                     self.assertFalse(config["auto_delegate_enabled"])
+                    self.assertIsNone(config["auto_delegate_provider"])
 
     def test_aux_delegate_auto_ask_requires_context_and_short_safe_prompt(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            config_path = Path(tmp) / "config.json"
-            context = Path(tmp) / "log.txt"
-            context.write_text("plain log", encoding="utf-8")
-            write_private_config(config_path, {"aux_ai_enabled": True, "auto_delegate_enabled": True, "default_provider": "gemini"})
-            env = os.environ.copy()
-            env["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(config_path)
+        for script in AUX_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    config_path = Path(tmp) / "config.json"
+                    context = Path(tmp) / "log.txt"
+                    context.write_text("plain log", encoding="utf-8")
+                    prompt_file = Path(tmp) / "prompt.txt"
+                    prompt_file.write_text("Read-only: summarize", encoding="utf-8")
+                    secret_context = Path(tmp) / ".env"
+                    secret_context.write_text("TOKEN=secret", encoding="utf-8")
+                    write_private_config(config_path, {
+                        "aux_ai_enabled": True,
+                        "auto_delegate_enabled": True,
+                        "auto_delegate_provider": "gemini",
+                        "default_provider": "gemini",
+                    })
+                    env = os.environ.copy()
+                    env["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(config_path)
 
-            no_context = subprocess.run(
-                [
-                    sys.executable,
-                    str(KIT_DIR / "aux_ai_delegate.py"),
-                    "ask",
-                    "--auto",
-                    "--provider",
-                    "gemini",
-                    "--prompt",
-                    "Read-only: summarize",
-                    "--dry-run",
-                ],
-                text=True,
-                capture_output=True,
-                env=env,
-            )
-            self.assertEqual(no_context.returncode, 2)
-            self.assertIn("requires at least one helper-validated --context", no_context.stderr)
+                    no_context = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "ask",
+                            "--auto",
+                            "--provider",
+                            "gemini",
+                            "--prompt",
+                            "Read-only: summarize",
+                            "--dry-run",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertEqual(no_context.returncode, 2)
+                    self.assertIn("requires at least one helper-validated --context", no_context.stderr)
 
-            sensitive_prompt = subprocess.run(
-                [
-                    sys.executable,
-                    str(KIT_DIR / "aux_ai_delegate.py"),
-                    "ask",
-                    "--auto",
-                    "--provider",
-                    "gemini",
-                    "--prompt",
-                    "TOKEN=ghp_" + ("A" * 36),
-                    "--context",
-                    str(context),
-                    "--dry-run",
-                ],
-                text=True,
-                capture_output=True,
-                env=env,
-            )
-            self.assertEqual(sensitive_prompt.returncode, 2)
-            self.assertIn("blocked sensitive prompt content", sensitive_prompt.stderr)
+                    prompt_file_rejected = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "ask",
+                            "--auto",
+                            "--provider",
+                            "gemini",
+                            "--prompt-file",
+                            str(prompt_file),
+                            "--context",
+                            str(context),
+                            "--dry-run",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertEqual(prompt_file_rejected.returncode, 2)
+                    self.assertIn("not stdin or --prompt-file", prompt_file_rejected.stderr)
 
-            ok = subprocess.run(
-                [
-                    sys.executable,
-                    str(KIT_DIR / "aux_ai_delegate.py"),
-                    "ask",
-                    "--auto",
-                    "--provider",
-                    "gemini",
-                    "--prompt",
-                    "Read-only: summarize likely root cause",
-                    "--context",
-                    str(context),
-                    "--dry-run",
-                ],
-                text=True,
-                capture_output=True,
-                env=env,
-                check=True,
-            )
-            self.assertIn("provider=gemini", ok.stdout)
+                    long_prompt = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "ask",
+                            "--auto",
+                            "--provider",
+                            "gemini",
+                            "--prompt",
+                            "x" * 2001,
+                            "--context",
+                            str(context),
+                            "--dry-run",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertEqual(long_prompt.returncode, 2)
+                    self.assertIn("must be <= 2000", long_prompt.stderr)
+
+                    sensitive_prompt = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "ask",
+                            "--auto",
+                            "--provider",
+                            "gemini",
+                            "--prompt",
+                            "TOKEN=ghp_" + ("A" * 36),
+                            "--context",
+                            str(context),
+                            "--dry-run",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertEqual(sensitive_prompt.returncode, 2)
+                    self.assertIn("blocked sensitive prompt content", sensitive_prompt.stderr)
+
+                    blocked_context = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "ask",
+                            "--auto",
+                            "--provider",
+                            "gemini",
+                            "--prompt",
+                            "Read-only: summarize",
+                            "--context",
+                            str(secret_context),
+                            "--dry-run",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertEqual(blocked_context.returncode, 2)
+                    self.assertIn("automatic delegation refused blocked context", blocked_context.stderr)
+                    self.assertIn("warning: blocked sensitive context", blocked_context.stderr)
+
+                    ok = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "ask",
+                            "--auto",
+                            "--provider",
+                            "gemini",
+                            "--prompt",
+                            "Read-only: summarize likely root cause",
+                            "--context",
+                            str(context),
+                            "--dry-run",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                        check=True,
+                    )
+                    self.assertIn("provider=gemini", ok.stdout)
 
     def test_aux_delegate_blocks_sensitive_prompt_text_by_default(self):
         with tempfile.TemporaryDirectory() as tmp:

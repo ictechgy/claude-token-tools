@@ -23,7 +23,7 @@ claude-token-setup --plan
    - large Read guard,
    - missing model/effort defaults,
    - optional Gemini/Codex manual auxiliary AI delegation,
-   - separate optional automatic delegation for safe, non-sensitive, project-local read-only triage or long-log analysis.
+   - separate optional automatic delegation for safe, non-sensitive, project-local read-only triage or long-log analysis, bound to the selected provider.
 3. If the user wants the recommended project-local setup, run:
 
 ```bash
@@ -51,6 +51,6 @@ Safety:
 - Do not modify global `~/.claude/settings.json`.
 - Prefer project-local `.claude/settings.json`.
 - Never enable manual auxiliary AI implicitly.
-- Never enable automatic delegation implicitly. Manual delegation enablement is not automatic-delegation consent.
+- Never enable automatic delegation implicitly. Manual delegation enablement is not automatic-delegation consent, and rerunning setup without `--auto-delegate` clears automatic-delegation consent.
 - Automatic delegation still must not send blocked paths, secrets, credentials, customer/private data, or policy-prohibited proprietary data.
 - After applying, run `claude-token-diet scan .` to show remaining gaps.

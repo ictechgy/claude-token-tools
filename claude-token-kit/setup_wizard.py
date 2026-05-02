@@ -313,9 +313,12 @@ def write_aux_config(
     elif not isinstance(policy, dict):
         raise SystemExit("Refusing to replace non-object aux context_policy; repair it manually first.")
     config["aux_ai_enabled"] = True
-    if auto_delegate or "auto_delegate_enabled" not in config:
-        config["auto_delegate_enabled"] = bool(auto_delegate)
     config["default_provider"] = provider
+    config["auto_delegate_enabled"] = bool(auto_delegate)
+    if auto_delegate:
+        config["auto_delegate_provider"] = provider
+    else:
+        config.pop("auto_delegate_provider", None)
     backup_path = backup_existing(config_path) if backup else None
     atomic_write(config_path, json.dumps(config, indent=2, sort_keys=True) + "\n", 0o600)
     return config_path, backup_path

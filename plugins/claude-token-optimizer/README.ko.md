@@ -62,7 +62,7 @@ claude-token-delegate disable
 ./plugins/claude-token-optimizer/bin/claude-token-setup --yes
 ```
 
-마법사는 `.claude/settings.json`을 replace하지 않고 merge합니다. Gemini/Codex 수동 보조 AI delegation은 `--aux-provider gemini|codex`처럼 명시적으로 선택할 때만 켜지고, 자동 위임은 `--auto-delegate`를 함께 지정할 때만 켜집니다.
+마법사는 `.claude/settings.json`을 replace하지 않고 merge합니다. Gemini/Codex 수동 보조 AI delegation은 `--aux-provider gemini|codex`처럼 명시적으로 선택할 때만 켜지고, 자동 위임은 `--auto-delegate`를 함께 지정할 때만 해당 provider에 대해 켜집니다. `--aux-provider`만으로 setup을 다시 실행하면 이전 자동 위임 consent는 해제됩니다.
 
 ## 주요 기능
 
@@ -147,7 +147,7 @@ Marketplace 설치 테스트:
 
 외부 provider로 공유해도 되는 context만 위임하세요. helper는 Claude에 bounded preview만 출력하고 전체 untrusted auxiliary response는 로컬에 저장합니다.
 
-자동 위임은 수동 delegation과 분리된 opt-in입니다. 수동 delegation을 켠 뒤, plugin skill이 선택한 provider에 non-sensitive project-local source/log context를 공유해도 되는 경우에만 `claude-token-delegate auto-enable`을 실행하세요. 자동 호출은 `--auto`와 helper-validated `--context`를 사용하고, `--prompt`에는 짧은 read-only 지시만 넣으며, blocked/sensitive/customer/policy-prohibited data를 피하고, 보조 AI 출력을 검증한 뒤 사용해야 합니다.
+자동 위임은 수동 delegation과 분리되고 provider에 묶이는 opt-in입니다. 수동 delegation을 켠 뒤, plugin skill이 현재/default provider에 non-sensitive project-local source/log context를 공유해도 되는 경우에만 `claude-token-delegate auto-enable`을 실행하세요. 자동 호출은 `--auto`를 사용하되 `--provider`는 생략해 helper가 승인된 provider만 쓰게 하고, helper-validated `--context`를 사용하며, `--prompt`에는 짧은 read-only 지시만 넣고, blocked/sensitive/customer/policy-prohibited data를 피하고, 보조 AI 출력을 검증한 뒤 사용해야 합니다.
 
 Delegation은 기본적으로 project root 아래 context file만 허용하며, outside-project path, secret-like path, credential-like content를 차단합니다. 정책 검토 후 필요한 경우 trusted private config의 `context_policy`에 exact path만 허용하세요. CLI flag로 차단을 우회할 수 없습니다.
 

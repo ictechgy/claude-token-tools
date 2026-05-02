@@ -1,7 +1,7 @@
 ---
 description: Opt-in delegation to another locally authenticated AI CLI such as Gemini or Codex to reduce Claude Code token usage by offloading broad read-only analysis, logs, or planning. Use when the user asks to use Gemini, Codex, another AI, an auxiliary AI assistant, or a non-Claude subscription to save Claude tokens.
 argument-hint: enable|disable|status|auto-enable|auto-disable|ask [provider/task]
-allowed-tools: Bash(claude-token-delegate status), Bash(claude-token-delegate enable --provider gemini), Bash(claude-token-delegate enable --provider codex), Bash(claude-token-delegate auto-enable), Bash(claude-token-delegate auto-disable), Bash(claude-token-delegate disable), Bash(claude-token-delegate ask --provider gemini --prompt * --context *), Bash(claude-token-delegate ask --provider codex --prompt * --context *), Bash(claude-token-delegate ask --auto --provider gemini --prompt * --context *), Bash(claude-token-delegate ask --auto --provider codex --prompt * --context *)
+allowed-tools: Bash(claude-token-delegate status), Bash(claude-token-delegate enable --provider gemini), Bash(claude-token-delegate enable --provider codex), Bash(claude-token-delegate auto-enable), Bash(claude-token-delegate auto-disable), Bash(claude-token-delegate disable), Bash(claude-token-delegate ask --provider gemini --prompt * --context *), Bash(claude-token-delegate ask --provider codex --prompt * --context *), Bash(claude-token-delegate ask --auto --prompt * --context *)
 ---
 
 # Auxiliary AI Delegation
@@ -12,7 +12,7 @@ Safety and privacy rules:
 
 - Manual delegation is OFF by default. Do not call external AI with project context until `claude-token-delegate enable` has been run or `CLAUDE_TOKEN_OPTIMIZER_AUX_AI=1` is set against trusted project-local config.
 - Automatic delegation is separately OFF by default. Enabled manual delegation only permits explicit user-requested `ask` calls; plugin-initiated automatic calls require `claude-token-delegate auto-enable`.
-- Enabling automatic delegation means the user has opted this project/provider into skill-initiated sharing of non-sensitive project-local source/log context that passes helper policy checks. It is not permission to send secrets, credentials, customer/private data, policy-prohibited proprietary data, or blocked paths.
+- Enabling automatic delegation binds consent to the current/default provider shown by `status`. It means the user has opted this project/provider into skill-initiated sharing of non-sensitive project-local source/log context that passes helper policy checks. It is not permission to send secrets, credentials, customer/private data, policy-prohibited proprietary data, other providers, or blocked paths.
 - Do not send secrets, private customer data, proprietary files that policy does not allow sharing, or credentials to another provider unless the user explicitly confirms it is allowed by their policy.
 - Pass file/log content via `--context` so the auxiliary AI receives the large context and Claude receives only a short preview. Do not paste file/log contents into `--prompt`; `--prompt` should be a short instruction.
 - Context defaults to project-root files only; outside-project paths, obvious secret-like paths, and files whose contents look like credentials are blocked by default.
@@ -45,7 +45,7 @@ claude-token-delegate auto-enable
 claude-token-delegate auto-disable
 claude-token-delegate disable
 claude-token-delegate ask --provider gemini --prompt "Summarize likely root cause from this log" --context path/to/log.txt
-claude-token-delegate ask --auto --provider codex --prompt "Read-only: find likely files to inspect for this bug" --context src/error.log
+claude-token-delegate ask --auto --prompt "Read-only: find likely files to inspect for this bug" --context src/error.log
 ```
 
 When the user asks to enable/disable/status, run the matching command and report the result.
@@ -62,5 +62,5 @@ When automatic delegation would help but the user did not explicitly ask to dele
 
 1. Run `claude-token-delegate status`.
 2. If `auto_delegate_enabled=false`, do not delegate; mention `claude-token-delegate auto-enable` if useful.
-3. If enabled, use `claude-token-delegate ask --auto ... --context <file>` with a short read-only `--prompt` and no inline file/log content.
+3. If enabled, use `claude-token-delegate ask --auto --prompt ... --context <file>` without `--provider`; the helper will use only the auto-approved provider. Keep the prompt short and do not inline file/log content.
 4. State briefly that enabled automatic delegation was used to avoid loading large context into Claude.

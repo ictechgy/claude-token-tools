@@ -81,6 +81,7 @@ PROVIDER_AUTH_ENV_KEYS = {
 DEFAULT_CONFIG: dict[str, Any] = {
     "aux_ai_enabled": False,
     "auto_delegate_enabled": False,
+    "auto_delegate_provider": None,
     "default_provider": "gemini",
     "max_output_chars": 4000,
     "context_max_chars": 60000,
@@ -356,10 +357,6 @@ def is_enabled(config: dict[str, Any]) -> bool:
         print(f"warning: refusing enabled delegation from untrusted config: {trust_error}", file=sys.stderr)
         return False
     return True
-
-
-def is_auto_enabled(config: dict[str, Any]) -> bool:
-    return is_enabled(config) and bool(config.get("auto_delegate_enabled", False))
 
 
 def provider_config(config: dict[str, Any], provider: str | None) -> tuple[str, dict[str, Any]]:
@@ -694,13 +691,21 @@ def cmd_status(_: argparse.Namespace) -> int:
     if trust_error:
         print(f"config_trust_error={trust_error}")
     print(f"aux_ai_enabled={str(effective).lower()}")
-    print(f"auto_delegate_enabled={str(effective and bool(config.get('auto_delegate_enabled', False))).lower()}")
+    auto_provider = config.get("auto_delegate_provider")
+    auto_effective = bool(
+        effective
+        and config.get("auto_delegate_enabled", False)
+        and isinstance(auto_provider, str)
+        and auto_provider
+    )
+    print(f"auto_delegate_enabled={str(auto_effective).lower()}")
     if override is not None:
         print(f"enabled_source=env:{ENABLED_ENV}")
     else:
         print("enabled_source=config")
     print(f"custom_provider_commands={str(truthy_env(CUSTOM_PROVIDER_ENV)).lower()}")
     print(f"default_provider={config.get('default_provider')}")
+    print(f"auto_delegate_provider={config.get('auto_delegate_provider') or 'none'}")
     print(f"max_output_chars={config.get('max_output_chars')}")
     print(f"timeout_seconds={config.get('timeout_seconds')}")
     print(f"delegation_dir={safe_delegation_dir(config)}")
@@ -744,14 +749,18 @@ def cmd_enable(args: argparse.Namespace) -> int:
 
 def cmd_disable(_: argparse.Namespace) -> int:
     config = load_config()
+    was_auto_enabled = bool(config.get("auto_delegate_enabled", False) or config.get("auto_delegate_provider"))
     config["aux_ai_enabled"] = False
     config["auto_delegate_enabled"] = False
+    config["auto_delegate_provider"] = None
     path = save_config(config)
     print(f"disabled auxiliary AI delegation in {path}")
+    if was_auto_enabled:
+        print("also reset auto_delegate_enabled=false")
     return 0
 
 
-def cmd_auto_enable(_: argparse.Namespace) -> int:
+def cmd_auto_enable(args: argparse.Namespace) -> int:
     config = load_config()
     if not is_enabled(config):
         print(
@@ -760,9 +769,20 @@ def cmd_auto_enable(_: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 3
+    provider, selected_provider = provider_config(config, args.provider)
+    if args.provider:
+        config["default_provider"] = provider
+    command = selected_provider.get("command") or []
+    if isinstance(command, list) and not executable_available(command):
+        print(
+            f"warning: provider '{provider}' executable not found on PATH; ask will fail until installed",
+            file=sys.stderr,
+        )
     config["auto_delegate_enabled"] = True
+    config["auto_delegate_provider"] = provider
     path = save_config(config)
     print(f"enabled automatic auxiliary AI delegation in {path}")
+    print(f"auto_delegate_provider={provider}")
     print("auto_delegate_policy=read-only, project-local, non-sensitive context via --context only")
     return 0
 
@@ -770,6 +790,7 @@ def cmd_auto_enable(_: argparse.Namespace) -> int:
 def cmd_auto_disable(_: argparse.Namespace) -> int:
     config = load_config()
     config["auto_delegate_enabled"] = False
+    config["auto_delegate_provider"] = None
     path = save_config(config)
     print(f"disabled automatic auxiliary AI delegation in {path}")
     return 0
@@ -837,6 +858,21 @@ def cmd_ask(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 3
+    if args.auto:
+        approved_provider = config.get("auto_delegate_provider")
+        if not isinstance(approved_provider, str) or not approved_provider:
+            print(
+                "automatic auxiliary AI delegation provider is not set. Run `claude-token-delegate auto-enable` again.",
+                file=sys.stderr,
+            )
+            return 3
+        if args.provider and args.provider != approved_provider:
+            print(
+                f"automatic delegation is approved only for provider '{approved_provider}', not '{args.provider}'",
+                file=sys.stderr,
+            )
+            return 2
+        args.provider = approved_provider
 
     provider, item = provider_config(config, args.provider)
     command_template = item.get("command")
@@ -986,6 +1022,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_disable)
 
     p = sub.add_parser("auto-enable", help="Allow enabled plugin skills to use safe automatic delegation")
+    p.add_argument("--provider", help="Provider to approve for automatic delegation (default: current default_provider)")
     p.set_defaults(func=cmd_auto_enable)
 
     p = sub.add_parser("auto-disable", help="Disable automatic delegation while keeping explicit delegation available")
