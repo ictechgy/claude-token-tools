@@ -1,122 +1,110 @@
-# Claude Code Token Reduction Research
+# claude-token-tools
 
-Research date: 2026-05-01
-
-This repository is a research and experiment workspace for reducing Claude Code CLI token usage and context waste.
+Claude Code plugin and helper commands for reducing token usage, keeping context focused, and avoiding accidental large or sensitive output in Claude sessions.
 
 Korean documentation is available in [`README.ko.md`](README.ko.md).
 
-## Artifacts
+## What this provides
 
-- `research/claude-code-token-reduction.md` — core research report and prioritized action plan
-- `research/benchmark-plan.md` — benchmark design for validating token savings
-- `claude-token-kit/` — statusline, output trim/sanitize, transcript audit, settings scan, large Read guard, and auxiliary AI delegation tools
-- `plugins/claude-token-optimizer/` — Claude Code plugin distribution package
+- **Claude Code plugin**: installable skills for guided setup, optimization, usage audits, and optional auxiliary AI delegation.
+- **Project-local setup wizard**: merges recommended `.claude/settings.json` options without changing global Claude settings.
+- **Context hygiene scanner**: finds missing guardrails, noisy hooks, expensive defaults, broad reads, many MCP servers, and large or secret-like context files.
+- **Large Read guard and symbol reader**: nudges Claude away from whole-file reads and toward `rg` plus symbol/line-range reads.
+- **Output trimming and sanitizing**: keeps test/build/search/diff output compact and redacts likely secrets before Claude sees them.
+- **Statusline and transcript audit helpers**: surfaces token/cost/model state and usage hotspots.
+- **Opt-in auxiliary AI delegation**: lets Gemini CLI or Codex CLI summarize safe read-only context while Claude receives only a bounded preview.
 
-## 5-minute application summary
+## Install in Claude Code
 
-1. In Claude Code, check `/usage`, `/context`, `/model`, and `/effort` first.
-2. Use `/clear` when switching unrelated tasks; for long tasks, use `/compact <what to preserve>`.
-3. Default to `sonnet`, reserve `opusplan` for design or difficult reasoning, and use lower `/effort` for simple work.
-4. Keep `CLAUDE.md` short; move long workflow instructions into skills or custom commands.
-5. Minimize MCP servers and prefer CLI tools such as `gh`, `rg`, `jq`, `aws`, and `gcloud` where possible.
-6. Return only failure-focused slices of test/build logs to Claude through hooks or wrappers.
-7. Use subagents to isolate noisy research/log analysis, but keep agent teams small because each agent multiplies token usage.
+Add the marketplace and install the plugin:
 
-For the rationale and the safe-vs-not-recommended distinction, see `research/claude-code-token-reduction.md`.
+```text
+/plugin marketplace add ictechgy/claude-token-tools
+/plugin install claude-token-optimizer@claude-token-tools
+```
 
-## Claude Code plugin distribution
+Then run the guided setup inside Claude Code:
 
-This repository is also structured as a Claude Code plugin marketplace.
+```text
+/claude-token-optimizer:setup
+```
 
-- Marketplace file: `.claude-plugin/marketplace.json`
-- Plugin: `plugins/claude-token-optimizer/`
-- Main skills after install:
-  - `/claude-token-optimizer:setup`
-  - `/claude-token-optimizer:optimize`
-  - `/claude-token-optimizer:audit`
-  - `/claude-token-optimizer:delegate`
+Available plugin skills:
 
-Local test:
+```text
+/claude-token-optimizer:setup
+/claude-token-optimizer:optimize
+/claude-token-optimizer:audit
+/claude-token-optimizer:delegate
+```
+
+The plugin does **not** auto-enable global hooks just by being installed. Setup is project-local and opt-in. See `plugins/claude-token-optimizer/examples/settings.example.json` for an example settings file.
+
+## Local testing from this repository
+
+Run Claude Code with the plugin directory:
 
 ```bash
 claude --plugin-dir ./plugins/claude-token-optimizer
 ```
 
-Marketplace test from this repository root:
+Test marketplace installation from the repository root:
 
 ```text
 /plugin marketplace add ./
 /plugin install claude-token-optimizer@claude-token-tools
 ```
 
-After publishing to GitHub, users can add the marketplace with:
-
-```text
-/plugin marketplace add YOUR_GITHUB_USER/YOUR_REPO
-/plugin install claude-token-optimizer@claude-token-tools
-```
-
-This plugin intentionally does not auto-enable hooks globally. See `plugins/claude-token-optimizer/examples/settings.example.json` for an opt-in project settings example.
-
-After installing, run the guided project setup instead of memorizing all helper commands. Inside Claude Code, use:
-
-```text
-/claude-token-optimizer:setup
-```
-
-Plugin helper binaries are not guaranteed to be added to your normal shell `PATH`. For local testing from this repository root, run the helper by path:
+Plugin helper binaries are not guaranteed to be on your normal shell `PATH`. For local testing, call them by path:
 
 ```bash
 ./plugins/claude-token-optimizer/bin/claude-token-setup --plan
 ./plugins/claude-token-optimizer/bin/claude-token-setup --yes
 ```
 
-If you want short shell commands during local development, temporarily add the plugin bin directory:
+For shorter commands during local development, temporarily add the plugin bin directory:
 
 ```bash
 export PATH="$PWD/plugins/claude-token-optimizer/bin:$PATH"
 claude-token-setup --plan
 ```
 
-The wizard lets you choose deny rules, statusline, Bash trim/sanitize hook, large Read guard, model/effort defaults, and optional Gemini/Codex delegation. It merges project-local `.claude/settings.json`; it does not modify global Claude settings.
+## Common helper workflows
 
-Note: this plugin source repository ignores local Claude runtime state, including `.claude/`, because setup runs here are test-local. In your own project, decide whether team-wide `.claude/settings.json` should be committed or kept local according to your policy.
-
-For local project hygiene, run:
+Scan project context hygiene:
 
 ```bash
 ./plugins/claude-token-optimizer/bin/claude-token-diet scan .
 ```
 
-It reports missing `permissions.deny` guardrails, noisy-output hook/statusline gaps, broad reads, expensive defaults, many MCP servers, and large/secret-like context files.
-
-For large files, prefer symbol-sized context:
+Read a symbol-sized slice instead of an entire large file:
 
 ```bash
 ./plugins/claude-token-optimizer/bin/claude-read-symbol path/to/file.py TargetSymbol
 ```
 
-The example settings can also enable `claude-token-guard-read`, which blocks accidental whole-file reads above the guard threshold and points Claude to `rg` plus symbol/line-range reads.
-
-For long test/build logs, trim output before sending it back to Claude:
+Trim long test/build logs while preserving the wrapped command exit code:
 
 ```bash
 ./plugins/claude-token-optimizer/bin/claude-trim-output --max-lines 120 -- npm test
 ```
 
-For search or diff output that may contain secrets, sanitize before sending it back to Claude:
+Sanitize search or diff output before sending it back to Claude:
 
 ```bash
 ./plugins/claude-token-optimizer/bin/claude-sanitize-output -- rg -n "TOKEN|SECRET" .
 ./plugins/claude-token-optimizer/bin/claude-sanitize-output -- git diff
 ```
 
-Wrapper mode preserves the wrapped command exit code. Pipeline mode such as `git diff | claude-sanitize-output` is still useful for ad-hoc cleanup, but the sanitizer cannot know the producer's exit code unless your shell uses `pipefail`. The same Bash hook that trims test/build logs can also auto-wrap single safe `rg`/`grep`/`git diff` commands with the sanitizer.
+Audit local Claude transcript usage:
 
-### Optional: auxiliary AI delegation
+```bash
+./plugins/claude-token-optimizer/bin/claude-token-audit ~/.claude/projects --top 20 --recommend
+```
 
-If you also have Gemini CLI or Codex CLI access, the plugin can use them as an opt-in read-only assistant to save Claude tokens on broad exploration or long logs:
+## Optional auxiliary AI delegation
+
+If you have Gemini CLI or Codex CLI access, delegation can use another local AI CLI as a read-only assistant for broad file triage, long-log summaries, root-cause hypotheses, or second-opinion planning.
 
 ```text
 /claude-token-optimizer:delegate enable --provider gemini
@@ -125,9 +113,14 @@ If you also have Gemini CLI or Codex CLI access, the plugin can use them as an o
 /claude-token-optimizer:delegate disable
 ```
 
-The underlying command is `claude-token-delegate`. Manual delegation is OFF by default, stores local state in `.claude-token-optimizer/`, prints only a bounded preview back to Claude, and saves full auxiliary responses locally. Do not delegate secrets or private data to another AI provider unless your policy allows it.
+Manual delegation is OFF by default and stores project-local state under `.claude-token-optimizer/`. Automatic delegation is a separate provider-bound opt-in. Only delegate context you are allowed to share with that external provider; do not delegate secrets, customer data, or policy-prohibited content. Treat auxiliary output as untrusted until verified.
 
-Automatic delegation is a separate provider-bound opt-in. After manual delegation is enabled, run `claude-token-delegate auto-enable` only if plugin skills may use the current/default provider for safe read-only work that would otherwise burn a lot of Claude context, such as long-log summarization, broad file triage, root-cause hypotheses, or second-opinion planning. Automatic calls omit `--provider` so the helper uses only the approved provider, must use helper-validated `--context` files, keep `--prompt` to a short instruction, avoid blocked/sensitive/customer/policy-prohibited data, and treat auxiliary output as untrusted until verified.
+## Repository layout
+
+- `.claude-plugin/marketplace.json` — Claude Code marketplace manifest
+- `plugins/claude-token-optimizer/` — installable Claude Code plugin package
+- `claude-token-kit/` — underlying Python/Bash helper tools
+- `tests/` — targeted regression tests for helper behavior
 
 ## License
 
