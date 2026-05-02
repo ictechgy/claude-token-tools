@@ -4,6 +4,10 @@ A Claude Code plugin and set of helper commands for reducing token usage, keepin
 
 Korean documentation: [`README.ko.md`](README.ko.md)
 
+## TL;DR
+
+Install the plugin, run `/claude-token-optimizer:setup` in your project, and Claude will automatically trim noisy output, guard against large file reads, and redact secrets — without touching your global settings. Optionally delegate read-only tasks to Gemini or Codex CLI to save even more tokens.
+
 ## Features
 
 - **Claude Code plugin** — installable skills for guided setup, optimization, usage audits, and optional auxiliary AI delegation.
