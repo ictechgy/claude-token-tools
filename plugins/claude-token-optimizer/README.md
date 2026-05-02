@@ -15,7 +15,14 @@ After installation, use:
 
 ## Helper commands
 
-The plugin exposes executables in `bin/` while enabled:
+The plugin includes executables under `bin/`. Claude Code can call them from plugin skills, but your normal shell may not automatically add plugin `bin/` to `PATH`. If a command is not found, either run it by path from this repository root or add the bin directory to `PATH` for the current shell:
+
+```bash
+./plugins/claude-token-optimizer/bin/claude-token-setup --plan
+export PATH="$PWD/plugins/claude-token-optimizer/bin:$PATH"
+```
+
+When the plugin bin directory is on `PATH`, the commands are:
 
 ```bash
 claude-token-audit ~/.claude/projects --top 20 --recommend
@@ -36,7 +43,7 @@ claude-token-delegate disable
 
 `claude-token-audit --recommend` anonymizes transcript paths and command strings by default (`basename#hash`, `command#hash`). Use `--show-paths` or `--show-commands` only for local/private reports.
 
-`claude-token-setup` is the post-install wizard. Run it directly in a terminal for interactive prompts, or run `claude-token-setup --plan` followed by `claude-token-setup --yes` for the recommended project-local setup. It merges `.claude/settings.json` instead of replacing it, and it never enables auxiliary Gemini/Codex delegation unless selected explicitly with `--aux-provider gemini|codex`.
+`claude-token-setup` is the post-install wizard. Prefer `/claude-token-optimizer:setup` inside Claude Code. In a normal terminal, run `./plugins/claude-token-optimizer/bin/claude-token-setup --plan` from this repository root, or use `claude-token-setup --plan` only after adding the plugin bin directory to `PATH`. It merges `.claude/settings.json` instead of replacing it, and it never enables auxiliary Gemini/Codex delegation unless selected explicitly with `--aux-provider gemini|codex`.
 
 `claude-token-diet scan` is a local read-only scanner for project Claude settings and context bloat. It checks missing `permissions.deny` guardrails, Bash trim hook/statusline setup, broad read allows, high default model/effort, many MCP servers, and large/secret-like `CLAUDE.md` or `AGENTS.md` context files. It anonymizes the project root by default; use `--show-paths` only for local/private reports.
 

@@ -56,16 +56,24 @@ After publishing to GitHub, users can add the marketplace with:
 
 This plugin intentionally does not auto-enable hooks globally. See `plugins/claude-token-optimizer/examples/settings.example.json` for an opt-in project settings example.
 
-After installing, run the guided project setup instead of memorizing all helper commands:
-
-```bash
-claude-token-setup
-```
-
-Inside Claude Code, use:
+After installing, run the guided project setup instead of memorizing all helper commands. Inside Claude Code, use:
 
 ```text
 /claude-token-optimizer:setup
+```
+
+Plugin helper binaries are not guaranteed to be added to your normal shell `PATH`. For local testing from this repository root, run the helper by path:
+
+```bash
+./plugins/claude-token-optimizer/bin/claude-token-setup --plan
+./plugins/claude-token-optimizer/bin/claude-token-setup --yes
+```
+
+If you want short shell commands during local development, temporarily add the plugin bin directory:
+
+```bash
+export PATH="$PWD/plugins/claude-token-optimizer/bin:$PATH"
+claude-token-setup --plan
 ```
 
 The wizard lets you choose deny rules, statusline, Bash trim/sanitize hook, large Read guard, model/effort defaults, and optional Gemini/Codex delegation. It merges project-local `.claude/settings.json`; it does not modify global Claude settings.
@@ -73,7 +81,7 @@ The wizard lets you choose deny rules, statusline, Bash trim/sanitize hook, larg
 For local project hygiene, run:
 
 ```bash
-claude-token-diet scan .
+./plugins/claude-token-optimizer/bin/claude-token-diet scan .
 ```
 
 It reports missing `permissions.deny` guardrails, noisy-output hook/statusline gaps, broad reads, expensive defaults, many MCP servers, and large/secret-like context files.
@@ -81,7 +89,7 @@ It reports missing `permissions.deny` guardrails, noisy-output hook/statusline g
 For large files, prefer symbol-sized context:
 
 ```bash
-claude-read-symbol path/to/file.py TargetSymbol
+./plugins/claude-token-optimizer/bin/claude-read-symbol path/to/file.py TargetSymbol
 ```
 
 The example settings can also enable `claude-token-guard-read`, which blocks accidental whole-file reads above the guard threshold and points Claude to `rg` plus symbol/line-range reads.
@@ -89,8 +97,8 @@ The example settings can also enable `claude-token-guard-read`, which blocks acc
 For search or diff output that may contain secrets, sanitize before sending it back to Claude:
 
 ```bash
-claude-sanitize-output -- rg -n "TOKEN|SECRET" .
-claude-sanitize-output -- git diff
+./plugins/claude-token-optimizer/bin/claude-sanitize-output -- rg -n "TOKEN|SECRET" .
+./plugins/claude-token-optimizer/bin/claude-sanitize-output -- git diff
 ```
 
 Wrapper mode preserves the wrapped command exit code. Pipeline mode such as `git diff | claude-sanitize-output` is still useful for ad-hoc cleanup, but the sanitizer cannot know the producer's exit code unless your shell uses `pipefail`. The same Bash hook that trims test/build logs can also auto-wrap single safe `rg`/`grep`/`git diff` commands with the sanitizer.
