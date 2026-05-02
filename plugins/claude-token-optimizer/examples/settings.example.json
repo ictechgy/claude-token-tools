@@ -33,6 +33,15 @@
             "command": "claude-token-rewrite-bash"
           }
         ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "claude-token-guard-read"
+          }
+        ]
       }
     ]
   }

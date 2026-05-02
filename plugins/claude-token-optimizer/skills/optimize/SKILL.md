@@ -1,7 +1,7 @@
 ---
 description: Diagnose and reduce Claude Code token usage for a project or session using context hygiene, model and effort routing, MCP minimization, output trimming, subagent discipline, and measurement. Use when the user asks to lower Claude Code token usage, cost, context bloat, or usage-limit burn.
 argument-hint: [project/session symptoms]
-allowed-tools: Bash(claude-token-audit *), Bash(claude-token-diet scan *), Bash(claude-trim-output *), Bash(claude-token-statusline)
+allowed-tools: Bash(claude-token-audit *), Bash(claude-token-diet scan *), Bash(claude-read-symbol *), Bash(claude-trim-output *), Bash(claude-token-statusline)
 ---
 
 # Claude Token Optimizer
@@ -17,6 +17,7 @@ Use this order:
 2. Identify the largest bucket:
    - stale conversation history -> recommend `/clear` between unrelated tasks and focused `/compact` for long tasks.
    - startup context -> prune `CLAUDE.md`, move long workflows to skills, disable unused MCP servers.
+   - large file reads -> use `claude-read-symbol` and the example Read guard before whole-file context.
    - noisy command output -> use `claude-trim-output` wrappers or the example PreToolUse hook.
    - expensive reasoning -> route default work to `sonnet` and lower `/effort`; reserve Opus/`opusplan` for planning.
    - noisy exploration -> use a subagent for logs/research, but avoid agent teams unless parallel value justifies the multiplier.
@@ -32,6 +33,7 @@ Useful local commands provided by this plugin:
 ```bash
 claude-token-audit ~/.claude/projects --top 20 --recommend
 claude-token-diet scan .
+claude-read-symbol path/to/file.py TargetSymbol
 claude-trim-output --max-lines 120 -- npm test
 claude-token-statusline
 ```

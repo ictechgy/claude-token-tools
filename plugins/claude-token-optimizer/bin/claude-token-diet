@@ -339,6 +339,15 @@ def scan_settings(root: Path, settings: list[dict[str, Any]]) -> tuple[dict[str,
             "Install the example hook using claude-token-rewrite-bash or rewrite_bash_for_token_budget.py.",
         ))
 
+    if not has_large_read_guard(merged):
+        findings.append(Finding(
+            "missing-large-read-guard",
+            "medium",
+            ".claude/settings.json",
+            "No PreToolUse Read hook for blocking large whole-file reads was detected.",
+            "Install claude-token-guard-read so Claude is nudged toward claude-read-symbol or line-range reads before large files enter context.",
+        ))
+
     if not has_statusline(merged):
         findings.append(Finding(
             "missing-token-statusline",
@@ -399,6 +408,7 @@ def scan_settings(root: Path, settings: list[dict[str, Any]]) -> tuple[dict[str,
         "deny_count": len(deny_entries),
         "allow_count": len(allow_entries),
         "has_bash_trim_hook": has_bash_trim_hook(merged),
+        "has_large_read_guard": has_large_read_guard(merged),
         "has_statusline": has_statusline(merged),
         "mcp_server_count": len(mcp_servers),
         "model": merged.get("model"),
@@ -429,6 +439,30 @@ def has_bash_trim_hook(settings: dict[str, Any]) -> bool:
 def matcher_applies_to_bash(matcher: str) -> bool:
     parts = [part.strip().lower() for part in matcher.split("|")]
     return any(part in {"", "*", "bash"} for part in parts)
+
+
+def has_large_read_guard(settings: dict[str, Any]) -> bool:
+    hooks = settings.get("hooks")
+    if not isinstance(hooks, dict):
+        return False
+    pre_tool = hooks.get("PreToolUse")
+    if not isinstance(pre_tool, list):
+        return False
+    for entry in pre_tool:
+        if not isinstance(entry, dict):
+            continue
+        matcher = entry.get("matcher")
+        if isinstance(matcher, str) and not matcher_applies_to_read(matcher):
+            continue
+        commands = string_values(entry.get("hooks"))
+        if any("claude-token-guard-read" in cmd or "guard_large_read.py" in cmd for cmd in commands):
+            return True
+    return False
+
+
+def matcher_applies_to_read(matcher: str) -> bool:
+    parts = [part.strip().lower() for part in matcher.split("|")]
+    return any(part in {"", "*", "read"} for part in parts)
 
 
 def has_statusline(settings: dict[str, Any]) -> bool:
@@ -566,6 +600,7 @@ def print_text(report: dict[str, Any]) -> None:
         "settings: "
         f"files={len(settings['files'])} deny={settings['deny_count']} "
         f"trim_hook={'yes' if settings['has_bash_trim_hook'] else 'no'} "
+        f"read_guard={'yes' if settings['has_large_read_guard'] else 'no'} "
         f"statusline={'yes' if settings['has_statusline'] else 'no'} "
         f"mcp={settings['mcp_server_count']}"
     )

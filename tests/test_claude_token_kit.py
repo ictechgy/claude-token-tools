@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -19,21 +20,30 @@ IMPLEMENTATION_PAIRS = [
     (KIT_DIR / "aux_ai_delegate.py", PLUGIN_BIN / "claude-token-delegate"),
     (KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "claude-token-audit"),
     (KIT_DIR / "claude_token_diet.py", PLUGIN_BIN / "claude-token-diet"),
+    (KIT_DIR / "guard_large_read.py", PLUGIN_BIN / "claude-token-guard-read"),
+    (KIT_DIR / "read_symbol.py", PLUGIN_BIN / "claude-read-symbol"),
     (KIT_DIR / "rewrite_bash_for_token_budget.py", PLUGIN_BIN / "claude-token-rewrite-bash"),
     (KIT_DIR / "trim_command_output.py", PLUGIN_BIN / "claude-trim-output"),
     (KIT_DIR / "statusline.sh", PLUGIN_BIN / "claude-token-statusline"),
 ]
 TRIM_SCRIPTS = [KIT_DIR / "trim_command_output.py", PLUGIN_BIN / "claude-trim-output"]
 DIET_SCRIPTS = [KIT_DIR / "claude_token_diet.py", PLUGIN_BIN / "claude-token-diet"]
+READ_GUARD_SCRIPTS = [KIT_DIR / "guard_large_read.py", PLUGIN_BIN / "claude-token-guard-read"]
+READ_SYMBOL_SCRIPTS = [KIT_DIR / "read_symbol.py", PLUGIN_BIN / "claude-read-symbol"]
 
 
 def run_hook(script: Path, command: str, cwd: Path = ROOT) -> subprocess.CompletedProcess[str]:
+    return run_hook_payload(script, {"tool_input": {"command": command}}, cwd)
+
+
+def run_hook_payload(script: Path, payload: dict, cwd: Path = ROOT, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(script)],
-        input=json.dumps({"tool_input": {"command": command}}),
+        input=json.dumps(payload),
         text=True,
         capture_output=True,
         cwd=cwd,
+        env=env,
         check=True,
     )
 
@@ -307,6 +317,131 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertEqual(json.loads(proc.stdout), {})
             self.assertIn("trim wrapper not found", proc.stderr)
 
+    def test_large_read_guard_blocks_large_whole_file_reads(self):
+        for script in READ_GUARD_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    big = root / "big.py"
+                    big.write_text("def target():\n    pass\n" + ("# noise\n" * 8000), encoding="utf-8")
+                    proc = run_hook_payload(script, {"tool_input": {"file_path": "big.py"}}, cwd=root)
+                    data = json.loads(proc.stdout)
+                    hook = data["hookSpecificOutput"]
+                    self.assertEqual(hook["permissionDecision"], "deny")
+                    self.assertIn("Large Read blocked", hook["permissionDecisionReason"])
+                    self.assertIn("claude-read-symbol", hook["permissionDecisionReason"])
+                    self.assertNotIn(str(root), hook["permissionDecisionReason"])
+
+    def test_large_read_guard_allows_small_or_disabled_reads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            small = root / "small.py"
+            small.write_text("def target():\n    pass\n", encoding="utf-8")
+            self.assertEqual(
+                json.loads(run_hook_payload(KIT_DIR / "guard_large_read.py", {"tool_input": {"file_path": "small.py"}}, cwd=root).stdout),
+                {},
+            )
+            env = os.environ.copy()
+            env["CLAUDE_TOKEN_READ_GUARD"] = "0"
+            big = root / "big.py"
+            big.write_text("x\n" * 100000, encoding="utf-8")
+            self.assertEqual(
+                json.loads(run_hook_payload(KIT_DIR / "guard_large_read.py", {"tool_input": {"file_path": "big.py"}}, cwd=root, env=env).stdout),
+                {},
+            )
+
+    def test_large_read_guard_allows_bounded_line_ranges_and_non_read_tools(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            big = root / "big.py"
+            big.write_text("x\n" * 100000, encoding="utf-8")
+            self.assertEqual(
+                json.loads(
+                    run_hook_payload(
+                        KIT_DIR / "guard_large_read.py",
+                        {"tool_name": "Read", "tool_input": {"file_path": "big.py", "offset": 10, "limit": 20}},
+                        cwd=root,
+                    ).stdout
+                ),
+                {},
+            )
+            self.assertEqual(
+                json.loads(
+                    run_hook_payload(
+                        KIT_DIR / "guard_large_read.py",
+                        {"tool_name": "Edit", "tool_input": {"file_path": "big.py"}},
+                        cwd=root,
+                    ).stdout
+                ),
+                {},
+            )
+
+    def test_large_read_guard_quotes_suggested_shell_commands(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bad = root / "bad; echo PWNED $(x).py"
+            bad.write_text("x\n" * 100000, encoding="utf-8")
+            proc = run_hook_payload(KIT_DIR / "guard_large_read.py", {"tool_input": {"file_path": bad.name}}, cwd=root)
+            reason = json.loads(proc.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+            self.assertIn(shlex.quote(bad.name), reason)
+            self.assertIn("rg -n '<symbol-or-error>' --", reason)
+            self.assertNotIn(f" {bad.name}`", reason)
+
+    def test_read_symbol_extracts_python_and_typescript_symbols(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            py = root / "sample.py"
+            py.write_text(
+                "def before():\n    return 0\n\n"
+                "def target(value):\n    if value:\n        return value + 1\n    return 0\n\n"
+                "def after():\n    return 2\n",
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "read_symbol.py"), str(py), "target", "--json", "--context", "0"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            self.assertEqual(data["symbol"], "target")
+            self.assertEqual(data["language"], "python")
+            self.assertIn("def target", data["content"])
+            self.assertNotIn("def after", data["content"])
+            self.assertRegex(data["path"], r"sample\.py#path:[0-9a-f]{12}")
+
+            ts = root / "sample.ts"
+            ts.write_text(
+                "export function target(input: number) {\n"
+                "  return input + 1;\n"
+                "}\n\n"
+                "export function after() { return 0; }\n",
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                [sys.executable, str(PLUGIN_BIN / "claude-read-symbol"), str(ts), "target", "--json", "--context", "0"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            self.assertEqual(data["language"], "javascript")
+            self.assertIn("export function target", data["content"])
+            self.assertNotIn("function after", data["content"])
+
+    def test_read_symbol_reports_truncated_search_when_symbol_after_cap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            large = root / "late.py"
+            large.write_text("# filler\n" * 260000 + "\ndef late_symbol():\n    return 1\n", encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "read_symbol.py"), str(large), "late_symbol"],
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(proc.returncode, 1)
+            self.assertIn("first 2000000 bytes", proc.stderr)
+
     def test_transcript_audit_reads_usage_and_reports_skips(self):
         with tempfile.TemporaryDirectory() as tmp:
             sample = Path(tmp) / "session.json"
@@ -559,6 +694,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertIn("missing-sensitive-deny-env", finding_ids)
                     self.assertIn("large-context-file", rule_ids)
                     self.assertIn("missing-bash-trim-hook", finding_ids)
+                    self.assertIn("missing-large-read-guard", finding_ids)
                     self.assertIn("broad-read-allow", finding_ids)
                     self.assertIn("opus-default-model", finding_ids)
                     self.assertEqual(data["settings"]["mcp_server_count"], 6)
@@ -603,6 +739,10 @@ class ClaudeTokenKitTests(unittest.TestCase):
                             {
                                 "matcher": "Bash",
                                 "hooks": [{"type": "command", "command": "claude-token-rewrite-bash"}],
+                            },
+                            {
+                                "matcher": "Read",
+                                "hooks": [{"type": "command", "command": "claude-token-guard-read"}],
                             }
                         ]
                     },
@@ -621,8 +761,10 @@ class ClaudeTokenKitTests(unittest.TestCase):
             rule_ids = {item["rule_id"] for item in data["findings"]}
             self.assertEqual(data["root"], str(root.resolve()))
             self.assertTrue(data["settings"]["has_bash_trim_hook"])
+            self.assertTrue(data["settings"]["has_large_read_guard"])
             self.assertTrue(data["settings"]["has_statusline"])
             self.assertNotIn("missing-bash-trim-hook", finding_ids)
+            self.assertNotIn("missing-large-read-guard", finding_ids)
             self.assertNotIn("large-context-file", rule_ids)
 
     def test_token_diet_scan_reports_invalid_settings(self):

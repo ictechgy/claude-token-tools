@@ -33,6 +33,15 @@
             "command": "python3 claude-token-kit/rewrite_bash_for_token_budget.py"
           }
         ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 claude-token-kit/guard_large_read.py"
+          }
+        ]
       }
     ]
   }

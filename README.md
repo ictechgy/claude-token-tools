@@ -62,6 +62,14 @@ claude-token-diet scan .
 
 It reports missing `permissions.deny` guardrails, noisy-output hook/statusline gaps, broad reads, expensive defaults, many MCP servers, and large/secret-like context files.
 
+For large files, prefer symbol-sized context:
+
+```bash
+claude-read-symbol path/to/file.py TargetSymbol
+```
+
+The example settings can also enable `claude-token-guard-read`, which blocks accidental whole-file reads above the guard threshold and points Claude to `rg` plus symbol/line-range reads.
+
 ### Optional: auxiliary AI delegation
 
 If you also have Gemini CLI or Codex CLI access, the plugin can use them as an opt-in read-only assistant to save Claude tokens on broad exploration or long logs:

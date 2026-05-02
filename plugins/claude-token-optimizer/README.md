@@ -20,6 +20,8 @@ The plugin exposes executables in `bin/` while enabled:
 claude-token-audit ~/.claude/projects --top 20 --recommend
 claude-token-diet scan . --json
 claude-trim-output --max-lines 120 -- npm test
+claude-read-symbol path/to/file.py TargetSymbol
+claude-token-guard-read
 claude-token-statusline
 claude-token-rewrite-bash
 claude-token-delegate status
@@ -31,6 +33,8 @@ claude-token-delegate disable
 `claude-token-audit --recommend` anonymizes transcript paths and command strings by default (`basename#hash`, `command#hash`). Use `--show-paths` or `--show-commands` only for local/private reports.
 
 `claude-token-diet scan` is a local read-only scanner for project Claude settings and context bloat. It checks missing `permissions.deny` guardrails, Bash trim hook/statusline setup, broad read allows, high default model/effort, many MCP servers, and large/secret-like `CLAUDE.md` or `AGENTS.md` context files. It anonymizes the project root by default; use `--show-paths` only for local/private reports.
+
+`claude-token-guard-read` is an opt-in PreToolUse Read hook that blocks large whole-file reads and suggests `rg -n` plus `claude-read-symbol` or small line-range reads. `claude-read-symbol` extracts a function/class/type-sized slice from Python, JavaScript/TypeScript, Go, or Rust files.
 
 `claude-trim-output` preserves the wrapped command exit code and, when output is trimmed, adds a runner-aware failure summary for common test runners: pytest node ids, Jest/Vitest failing files/tests, `go test` failures, and `cargo test` panic locations. This usually gives Claude the actionable file/test target without sending the full log. ANSI color codes are stripped and absolute paths are anonymized by default as `basename#path:<hash>`; add `--show-paths` only for local/private debugging.
 
