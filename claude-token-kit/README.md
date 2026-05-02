@@ -67,3 +67,7 @@ python3 claude-token-kit/aux_ai_delegate.py disable
 보조 AI 위임은 기본적으로 project root 아래 파일만 context로 허용하고, outside-project paths, `.env*`, key 파일, token/secret 이름 파일, credential-like content를 차단합니다. 정책 검토 후 필요한 경우에만 trusted private config의 `context_policy`로 차단된 exact path를 명시적으로 allow하세요. CLI flag로 차단을 우회할 수는 없습니다. 전체 보조 AI 응답은 `.claude-token-optimizer/` 아래에 `0600` 파일로 저장되며, 도구가 해당 private state 디렉터리에 `.gitignore`를 자동 생성합니다.
 
 Provider CLI는 임시 작업 디렉터리, isolated `HOME`/XDG/TMP, allowlisted environment로 실행됩니다. 따라서 OAuth credential이 필요한 CLI는 별도 provider API key 환경변수 또는 사용자가 검토한 custom provider 설정이 필요할 수 있습니다.
+
+## License
+
+Apache License 2.0. See the repository [LICENSE](../LICENSE).

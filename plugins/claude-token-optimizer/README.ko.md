@@ -152,3 +152,7 @@ Marketplace 설치 테스트:
 Delegation은 기본적으로 project root 아래 context file만 허용하며, outside-project path, secret-like path, credential-like content를 차단합니다. 정책 검토 후 필요한 경우 trusted private config의 `context_policy`에 exact path만 허용하세요. CLI flag로 차단을 우회할 수 없습니다.
 
 저장된 보조 AI 응답은 `.claude-token-optimizer/` 아래 private permission과 private `.gitignore`로 보호됩니다. Provider CLI는 자격 증명 노출을 줄이기 위해 sanitized environment와 격리된 `HOME`/XDG/TMP 디렉터리에서 실행됩니다. 따라서 기존 홈 디렉터리 OAuth 상태가 자동으로 보이지 않을 수 있으며, API key 기반 인증이나 검토된 custom provider 설정이 필요할 수 있습니다.
+
+## 라이선스
+
+Apache License 2.0입니다. 저장소 [LICENSE](../../LICENSE)를 참고하세요.
