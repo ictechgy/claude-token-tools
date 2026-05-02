@@ -380,6 +380,165 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(config_path.parent.stat().st_mode), 0o700)
             self.assertTrue((config_path.parent / ".gitignore").exists())
 
+    def test_setup_wizard_refuses_global_home_settings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            home.mkdir()
+            env = os.environ.copy()
+            env["HOME"] = str(home)
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "setup_wizard.py"), "--root", str(home), "--yes"],
+                text=True,
+                capture_output=True,
+                env=env,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("Refusing to modify global", proc.stderr)
+            self.assertFalse((home / ".claude" / "settings.json").exists())
+
+    def test_setup_wizard_refuses_symlinked_claude_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            root.mkdir()
+            outside = Path(tmp) / "outside-claude"
+            outside.mkdir()
+            (root / ".claude").symlink_to(outside, target_is_directory=True)
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "setup_wizard.py"), "--root", str(root), "--yes"],
+                text=True,
+                capture_output=True,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("symlinked Claude settings directory", proc.stderr)
+
+    def test_setup_wizard_preserves_existing_settings_mode_and_statusline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings_path = root / ".claude" / "settings.json"
+            settings_path.parent.mkdir()
+            custom_statusline = {"type": "command", "command": "my-statusline"}
+            settings_path.write_text(json.dumps({"statusLine": custom_statusline}), encoding="utf-8")
+            os.chmod(settings_path, 0o600)
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(KIT_DIR / "setup_wizard.py"),
+                    "--root",
+                    str(root),
+                    "--yes",
+                    "--no-backup",
+                    "--json",
+                ],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            self.assertIn("kept existing statusLine", "\n".join(data["actions"]))
+            settings = json.loads(settings_path.read_text(encoding="utf-8"))
+            self.assertEqual(settings["statusLine"], custom_statusline)
+            self.assertEqual(stat.S_IMODE(settings_path.stat().st_mode), 0o600)
+
+    def test_setup_wizard_fails_on_malformed_settings_subtrees(self):
+        malformed_cases = [
+            {"permissions": []},
+            {"permissions": {"deny": "Read(./node_modules/**)"}},
+            {"hooks": []},
+            {"hooks": {"PreToolUse": "Bash"}},
+        ]
+        for settings in malformed_cases:
+            with self.subTest(settings=settings):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    settings_path = root / ".claude" / "settings.json"
+                    settings_path.parent.mkdir()
+                    settings_path.write_text(json.dumps(settings), encoding="utf-8")
+                    proc = subprocess.run(
+                        [sys.executable, str(KIT_DIR / "setup_wizard.py"), "--root", str(root), "--yes"],
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertIn("Refusing to replace", proc.stderr)
+
+    def test_setup_wizard_hook_dedup_uses_matcher_and_exact_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings_path = root / ".claude" / "settings.json"
+            settings_path.parent.mkdir()
+            settings_path.write_text(
+                json.dumps({
+                    "hooks": {
+                        "PreToolUse": [
+                            {
+                                "matcher": "Read",
+                                "hooks": [{"type": "command", "command": "claude-token-rewrite-bash"}],
+                            },
+                            {
+                                "matcher": "Bash",
+                                "hooks": [{"type": "command", "command": "claude-token-rewrite-bash-v2"}],
+                            },
+                        ]
+                    }
+                }),
+                encoding="utf-8",
+            )
+            subprocess.run(
+                [sys.executable, str(KIT_DIR / "setup_wizard.py"), "--root", str(root), "--yes", "--no-backup"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            settings = json.loads(settings_path.read_text(encoding="utf-8"))
+            bash_commands = [
+                hook["command"]
+                for entry in settings["hooks"]["PreToolUse"]
+                if entry.get("matcher") == "Bash"
+                for hook in entry.get("hooks", [])
+                if isinstance(hook, dict) and "command" in hook
+            ]
+            self.assertIn("claude-token-rewrite-bash-v2", bash_commands)
+            self.assertIn("claude-token-rewrite-bash", bash_commands)
+
+    def test_setup_wizard_merges_aux_config_and_creates_backup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / ".claude-token-optimizer"
+            state.mkdir()
+            config_path = state / "config.json"
+            existing_config = {
+                "aux_ai_enabled": False,
+                "default_provider": "gemini",
+                "context_policy": {"allow_sensitive_paths": ["approved.log"], "allow_outside_project_paths": []},
+                "custom_note": "keep me",
+            }
+            config_path.write_text(json.dumps(existing_config), encoding="utf-8")
+            os.chmod(config_path, 0o600)
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(KIT_DIR / "setup_wizard.py"),
+                    "--root",
+                    str(root),
+                    "--yes",
+                    "--aux-provider",
+                    "codex",
+                    "--json",
+                ],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            self.assertIsNotNone(data["aux_backup_path"])
+            self.assertTrue(Path(data["aux_backup_path"]).exists())
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertTrue(config["aux_ai_enabled"])
+            self.assertEqual(config["default_provider"], "codex")
+            self.assertEqual(config["context_policy"]["allow_sensitive_paths"], ["approved.log"])
+            self.assertEqual(config["custom_note"], "keep me")
+            self.assertEqual(stat.S_IMODE(config_path.stat().st_mode), 0o600)
+
     def test_trim_extracts_pytest_failure_summary_from_long_logs(self):
         code = (
             "import sys; "

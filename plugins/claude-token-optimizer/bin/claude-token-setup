@@ -8,11 +8,11 @@ CI tests.
 from __future__ import annotations
 
 import argparse
+import copy
 import datetime as _dt
 import json
 import os
 import shutil
-import stat
 import sys
 import uuid
 from dataclasses import dataclass
@@ -73,6 +73,7 @@ class SetupResult:
     actions: list[str]
     backup_path: Path | None = None
     aux_config_path: Path | None = None
+    aux_backup_path: Path | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -82,6 +83,7 @@ class SetupResult:
             "applied": self.applied,
             "backup_path": str(self.backup_path) if self.backup_path else None,
             "aux_config_path": str(self.aux_config_path) if self.aux_config_path else None,
+            "aux_backup_path": str(self.aux_backup_path) if self.aux_backup_path else None,
             "choices": self.choices.__dict__,
             "actions": self.actions,
         }
@@ -92,9 +94,36 @@ def find_project_root(start: Path | None = None) -> Path:
     if current.is_file():
         current = current.parent
     for candidate in [current, *current.parents]:
-        if (candidate / ".git").exists() or (candidate / ".claude").exists():
+        if (candidate / ".git").exists():
             return candidate
     return current
+
+
+def resolve_setup_root(raw_root: str | None) -> Path:
+    if raw_root is None:
+        return find_project_root()
+    root = Path(raw_root).expanduser().resolve()
+    return root.parent if root.is_file() else root
+
+
+def validate_settings_target(root: Path, settings_path: Path, *, allow_home_settings: bool) -> None:
+    root = root.resolve()
+    home_settings = Path.home().expanduser().resolve() / SETTINGS_REL
+    if settings_path.expanduser().resolve() == home_settings and not allow_home_settings:
+        raise SystemExit(
+            "Refusing to modify global ~/.claude/settings.json. Run from a project directory, "
+            "pass --root <project>, or use --allow-home-settings if you intentionally want this."
+        )
+    claude_dir = root / ".claude"
+    if claude_dir.exists() and claude_dir.is_symlink():
+        raise SystemExit(f"Refusing to use symlinked Claude settings directory: {claude_dir}")
+    if settings_path.exists() and settings_path.is_symlink():
+        raise SystemExit(f"Refusing to write through symlinked settings file: {settings_path}")
+    if claude_dir.exists():
+        try:
+            claude_dir.resolve().relative_to(root)
+        except ValueError as exc:
+            raise SystemExit(f"Claude settings directory resolves outside project root: {claude_dir}") from exc
 
 
 def load_json_object(path: Path) -> dict[str, Any]:
@@ -114,14 +143,18 @@ def load_json_object(path: Path) -> dict[str, Any]:
 
 
 def ensure_permissions(settings: dict[str, Any], actions: list[str]) -> None:
-    permissions = settings.setdefault("permissions", {})
-    if not isinstance(permissions, dict):
+    permissions = settings.get("permissions")
+    if permissions is None:
         permissions = {}
         settings["permissions"] = permissions
-    deny = permissions.setdefault("deny", [])
-    if not isinstance(deny, list):
+    if not isinstance(permissions, dict):
+        raise SystemExit("Refusing to replace non-object settings.permissions; repair it manually first.")
+    deny = permissions.get("deny")
+    if deny is None:
         deny = []
         permissions["deny"] = deny
+    if not isinstance(deny, list):
+        raise SystemExit("Refusing to replace non-list settings.permissions.deny; repair it manually first.")
     added = 0
     for rule in RECOMMENDED_DENIES:
         if rule not in deny:
@@ -144,22 +177,32 @@ def command_values(value: Any) -> list[str]:
     return found
 
 
-def has_hook_command(pre_tool_use: list[Any], command: str) -> bool:
-    return any(command in value for entry in pre_tool_use for value in command_values(entry))
+def has_hook_command(pre_tool_use: list[Any], matcher: str, command: str) -> bool:
+    for entry in pre_tool_use:
+        if not isinstance(entry, dict) or entry.get("matcher") != matcher:
+            continue
+        if any(value == command for value in command_values(entry)):
+            return True
+    return False
 
 
 def ensure_pre_tool_hook(settings: dict[str, Any], hook: dict[str, Any], command: str, label: str, actions: list[str]) -> None:
-    hooks = settings.setdefault("hooks", {})
-    if not isinstance(hooks, dict):
+    hooks = settings.get("hooks")
+    if hooks is None:
         hooks = {}
         settings["hooks"] = hooks
-    pre = hooks.setdefault("PreToolUse", [])
-    if not isinstance(pre, list):
+    if not isinstance(hooks, dict):
+        raise SystemExit("Refusing to replace non-object settings.hooks; repair it manually first.")
+    pre = hooks.get("PreToolUse")
+    if pre is None:
         pre = []
         hooks["PreToolUse"] = pre
-    if has_hook_command(pre, command):
+    if not isinstance(pre, list):
+        raise SystemExit("Refusing to replace non-list settings.hooks.PreToolUse; repair it manually first.")
+    matcher = str(hook.get("matcher") or "")
+    if has_hook_command(pre, matcher, command):
         return
-    pre.append(hook)
+    pre.append(copy.deepcopy(hook))
     actions.append(f"enabled {label} hook via {command}")
 
 
@@ -172,15 +215,18 @@ def apply_choices(settings: dict[str, Any], choices: Choices) -> list[str]:
         if not settings.get("effortLevel"):
             settings["effortLevel"] = DEFAULT_EFFORT
             actions.append(f"set default effortLevel to {DEFAULT_EFFORT}")
-    if choices.statusline and settings.get("statusLine") != STATUSLINE:
-        settings["statusLine"] = dict(STATUSLINE)
-        actions.append("enabled token statusline")
+    if choices.statusline:
+        if "statusLine" not in settings:
+            settings["statusLine"] = dict(STATUSLINE)
+            actions.append("enabled token statusline")
+        elif settings.get("statusLine") != STATUSLINE:
+            actions.append("kept existing statusLine; add claude-token-statusline manually if desired")
     if choices.denies:
         ensure_permissions(settings, actions)
     if choices.bash_hook:
-        ensure_pre_tool_hook(settings, dict(BASH_HOOK), "claude-token-rewrite-bash", "Bash trim/sanitize", actions)
+        ensure_pre_tool_hook(settings, BASH_HOOK, "claude-token-rewrite-bash", "Bash trim/sanitize", actions)
     if choices.read_guard:
-        ensure_pre_tool_hook(settings, dict(READ_HOOK), "claude-token-guard-read", "large Read guard", actions)
+        ensure_pre_tool_hook(settings, READ_HOOK, "claude-token-guard-read", "large Read guard", actions)
     return actions
 
 
@@ -192,7 +238,7 @@ def ensure_private_dir(path: Path) -> None:
         pass
 
 
-def atomic_write(path: Path, text: str, mode: int = 0o644) -> None:
+def atomic_write(path: Path, text: str, mode: int = 0o600) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
@@ -217,28 +263,63 @@ def write_private_gitignore(state_dir: Path) -> None:
     atomic_write(state_dir / ".gitignore", "*\n!.gitignore\n", 0o600)
 
 
-def write_aux_config(root: Path, provider: str, actions: list[str], *, dry_run: bool) -> Path | None:
+def existing_mode_or_default(path: Path, default: int = 0o600) -> int:
+    if not path.exists():
+        return default
+    return os.stat(path, follow_symlinks=False).st_mode & 0o777
+
+
+def load_aux_config(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    if path.is_symlink():
+        raise SystemExit(f"Refusing to write through symlinked auxiliary config: {path}")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Invalid JSON in {path}: line {exc.lineno}: {exc.msg}") from exc
+    except OSError as exc:
+        raise SystemExit(f"Could not read {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise SystemExit(f"Auxiliary config must contain a JSON object: {path}")
+    return data
+
+
+def write_aux_config(
+    root: Path,
+    provider: str,
+    actions: list[str],
+    *,
+    dry_run: bool,
+    backup: bool,
+) -> tuple[Path | None, Path | None]:
     if provider == "none":
-        return None
+        return None, None
     config_path = root / CONFIG_REL
     actions.append(f"enabled auxiliary AI delegation default_provider={provider}")
     if dry_run:
-        return config_path
+        return config_path, None
+    if config_path.parent.exists() and config_path.parent.is_symlink():
+        raise SystemExit(f"Refusing to use symlinked optimizer state directory: {config_path.parent}")
     write_private_gitignore(config_path.parent)
-    config = {
-        "aux_ai_enabled": True,
-        "default_provider": provider,
-        "context_policy": {"allow_sensitive_paths": [], "allow_outside_project_paths": []},
-    }
+    config = load_aux_config(config_path)
+    policy = config.get("context_policy")
+    if policy is None:
+        config["context_policy"] = {"allow_sensitive_paths": [], "allow_outside_project_paths": []}
+    elif not isinstance(policy, dict):
+        raise SystemExit("Refusing to replace non-object aux context_policy; repair it manually first.")
+    config["aux_ai_enabled"] = True
+    config["default_provider"] = provider
+    backup_path = backup_existing(config_path) if backup else None
     atomic_write(config_path, json.dumps(config, indent=2, sort_keys=True) + "\n", 0o600)
-    return config_path
+    return config_path, backup_path
 
 
 def backup_existing(path: Path) -> Path | None:
     if not path.exists():
         return None
-    stamp = _dt.datetime.now().strftime("%Y%m%d%H%M%S")
-    backup = path.with_name(f"{path.name}.bak-{stamp}")
+    stamp = _dt.datetime.now().strftime("%Y%m%d%H%M%S%f")
+    backup = path.with_name(f"{path.name}.bak-{stamp}-{uuid.uuid4().hex[:8]}")
     shutil.copy2(path, backup)
     return backup
 
@@ -315,8 +396,9 @@ def render_text(result: SetupResult) -> str:
 
 
 def run(args: argparse.Namespace) -> SetupResult:
-    root = find_project_root(Path(args.root))
+    root = resolve_setup_root(args.root)
     settings_path = root / SETTINGS_REL
+    validate_settings_target(root, settings_path, allow_home_settings=args.allow_home_settings)
     original = load_json_object(settings_path)
     settings = json.loads(json.dumps(original))
 
@@ -327,7 +409,13 @@ def run(args: argparse.Namespace) -> SetupResult:
 
     actions = apply_choices(settings, choices)
     aux_actions: list[str] = []
-    aux_path = write_aux_config(root, choices.aux_provider, aux_actions, dry_run=True)
+    aux_path, aux_backup_path = write_aux_config(
+        root,
+        choices.aux_provider,
+        aux_actions,
+        dry_run=True,
+        backup=False,
+    )
     actions.extend(aux_actions)
     changed = settings != original or choices.aux_provider != "none"
 
@@ -342,15 +430,30 @@ def run(args: argparse.Namespace) -> SetupResult:
         if settings_path.exists() and not args.no_backup and settings != original:
             backup_path = backup_existing(settings_path)
         if settings != original:
-            atomic_write(settings_path, json.dumps(settings, indent=2, sort_keys=False) + "\n", 0o644)
-        aux_path = write_aux_config(root, choices.aux_provider, [], dry_run=False)
+            atomic_write(
+                settings_path,
+                json.dumps(settings, indent=2, sort_keys=False) + "\n",
+                existing_mode_or_default(settings_path, 0o600),
+            )
+        aux_path, aux_backup_path = write_aux_config(
+            root,
+            choices.aux_provider,
+            [],
+            dry_run=False,
+            backup=not args.no_backup,
+        )
 
-    return SetupResult(root, settings_path, changed, applied, choices, actions, backup_path, aux_path)
+    return SetupResult(root, settings_path, changed, applied, choices, actions, backup_path, aux_path, aux_backup_path)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Interactively configure Claude token optimizer project settings.")
-    parser.add_argument("--root", default=".", help="project root to configure (default: current directory)")
+    parser.add_argument("--root", default=None, help="project root to configure (default: nearest git root, else current directory)")
+    parser.add_argument(
+        "--allow-home-settings",
+        action="store_true",
+        help="allow writing ~/.claude/settings.json; off by default to keep setup project-local",
+    )
     parser.add_argument("--yes", action="store_true", help="apply the recommended/selected setup without prompts")
     parser.add_argument("--plan", action="store_true", help="show the setup plan without writing files")
     parser.add_argument("--dry-run", action="store_true", help="alias for --plan")
