@@ -1,4 +1,5 @@
 # Local Claude/OMC orchestration and runtime state
+HANDOFF.md
 .claude/
 .omc/
 .remember/
