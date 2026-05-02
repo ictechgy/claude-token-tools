@@ -17,7 +17,7 @@ After installation, use:
 The plugin exposes executables in `bin/` while enabled:
 
 ```bash
-claude-token-audit ~/.claude/projects --top 20
+claude-token-audit ~/.claude/projects --top 20 --recommend
 claude-trim-output --max-lines 120 -- npm test
 claude-token-statusline
 claude-token-rewrite-bash
@@ -26,6 +26,8 @@ claude-token-delegate enable --provider gemini
 claude-token-delegate ask --provider gemini --prompt "Summarize this log" --context ./log.txt
 claude-token-delegate disable
 ```
+
+`claude-token-audit --recommend` anonymizes transcript paths and command strings by default (`basename#hash`, `command#hash`). Use `--show-paths` or `--show-commands` only for local/private reports.
 
 ## Local test before publishing
 

@@ -12,7 +12,7 @@ Use this order:
 
 1. Measure before changing behavior.
    - Ask the user to run `/usage` and `/context` if inside Claude Code.
-   - If transcript files are available, run `claude-token-audit ~/.claude/projects --top 20`.
+   - If transcript files are available, run `claude-token-audit ~/.claude/projects --top 20 --recommend`.
 2. Identify the largest bucket:
    - stale conversation history -> recommend `/clear` between unrelated tasks and focused `/compact` for long tasks.
    - startup context -> prune `CLAUDE.md`, move long workflows to skills, disable unused MCP servers.
@@ -29,7 +29,7 @@ Use this order:
 Useful local commands provided by this plugin:
 
 ```bash
-claude-token-audit ~/.claude/projects --top 20
+claude-token-audit ~/.claude/projects --top 20 --recommend
 claude-trim-output --max-lines 120 -- npm test
 claude-token-statusline
 ```

@@ -238,6 +238,149 @@ class ClaudeTokenKitTests(unittest.TestCase):
         data = json.loads(proc.stdout)
         self.assertEqual(data["tokens"]["input"], 1)
 
+    def test_transcript_audit_recommendations_surface_actionable_hotspots(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / "session.jsonl"
+            sample.write_text(
+                json.dumps({
+                    "model": "claude-sonnet-test",
+                    "query_source": "tool",
+                    "tool_name": "Bash",
+                    "command": "pytest tests -q",
+                    "usage": {
+                        "input_tokens": 1000,
+                        "output_tokens": 9000,
+                        "cache_creation_input_tokens": 1200,
+                    },
+                }) + "\n",
+                encoding="utf-8",
+            )
+            for script in [KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "claude-token-audit"]:
+                with self.subTest(script=script):
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            str(sample),
+                            "--json",
+                            "--recommend",
+                            "--top",
+                            "5",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    rec_ids = {rec["id"] for rec in data["recommendations"]}
+                    self.assertIn("trim-output-heavy-sessions", rec_ids)
+                    self.assertIn("runner-aware-test-summary", rec_ids)
+                    self.assertRegex(data["top_commands"][0]["name"], r"pytest#cmd:[0-9a-f]{12}")
+                    self.assertTrue(data["top_files"])
+                    self.assertNotIn(str(sample.parent), json.dumps(data))
+
+            text = subprocess.run(
+                [
+                    sys.executable,
+                    str(KIT_DIR / "claude_transcript_cost_audit.py"),
+                    str(sample),
+                    "--recommend",
+                ],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            self.assertIn("Recommendations", text.stdout)
+            self.assertIn("runner-aware failure extraction", text.stdout)
+
+    def test_transcript_audit_redacts_private_paths_and_secret_commands_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            nested = root / "actual"
+            nested.mkdir()
+            sample = nested / "session.jsonl"
+            secret = "sk-ant-" + ("A" * 24)
+            dsn = "postgres://user:pass@example.invalid/db"
+            sample.write_text(
+                json.dumps({
+                    "tool_name": "Bash",
+                    "author": {"name": "Alice Should Not Be A Tool"},
+                    "command": f"curl -H 'Authorization: Bearer {secret}' {dsn}; pytest tests -q",
+                    "usage": {"input_tokens": 1, "output_tokens": 6000},
+                }) + "\n",
+                encoding="utf-8",
+            )
+            symlink_root = root / "linked-projects"
+            symlink_root.symlink_to(nested, target_is_directory=True)
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(KIT_DIR / "claude_transcript_cost_audit.py"),
+                    str(symlink_root),
+                    "--json",
+                    "--recommend",
+                    "--top",
+                    "1",
+                ],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            output = proc.stdout
+            data = json.loads(output)
+            self.assertEqual(data["files"], 1)
+            self.assertNotIn(str(nested), output)
+            self.assertNotIn(secret, output)
+            self.assertNotIn(dsn, output)
+            self.assertNotIn("Alice Should Not Be A Tool", output)
+            self.assertRegex(data["top_files"][0]["name"], r"session\.jsonl#path:[0-9a-f]{12}")
+            self.assertRegex(data["top_commands"][0]["name"], r"curl#cmd:[0-9a-f]{12}")
+            self.assertGreaterEqual(len(data["recommendations"]), 2)
+
+            shown = subprocess.run(
+                [
+                    sys.executable,
+                    str(KIT_DIR / "claude_transcript_cost_audit.py"),
+                    str(sample),
+                    "--json",
+                    "--show-paths",
+                    "--show-commands",
+                ],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            shown_data = json.loads(shown.stdout)
+            self.assertEqual(shown_data["top_files"][0]["name"], str(sample))
+            self.assertIn("[REDACTED]", shown_data["top_commands"][0]["name"])
+            self.assertNotIn(secret, shown.stdout)
+
+    def test_transcript_audit_anonymizes_parse_error_paths_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sample = root / "bad-session.jsonl"
+            sample.write_text("{not json\n", encoding="utf-8")
+            for script in [KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "claude-token-audit"]:
+                with self.subTest(script=script):
+                    proc = subprocess.run(
+                        [sys.executable, str(script), str(sample), "--json", "--recommend"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertEqual(data["skipped_records"], 1)
+                    self.assertNotIn(str(root), proc.stdout)
+                    self.assertRegex(data["parse_errors"][0], r"bad-session\.jsonl#path:[0-9a-f]{12}:1")
+
+                    shown = subprocess.run(
+                        [sys.executable, str(script), str(sample), "--json", "--show-paths"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertIn(str(sample), shown.stdout)
+
     def test_aux_delegate_enable_disable_and_disabled_ask(self):
         for script in AUX_SCRIPTS:
             with self.subTest(script=script):

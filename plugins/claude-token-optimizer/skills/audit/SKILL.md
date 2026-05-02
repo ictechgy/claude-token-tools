@@ -11,16 +11,16 @@ Run a best-effort transcript audit, then interpret the result conservatively.
 Default command:
 
 ```bash
-claude-token-audit ~/.claude/projects --top 20
+claude-token-audit ~/.claude/projects --top 20 --recommend
 ```
 
 If the user supplies a path, audit that path instead. If no path is supplied, keep the default Claude projects path:
 
 ```bash
 if [ -n "$ARGUMENTS" ]; then
-  claude-token-audit "$ARGUMENTS" --top 20
+  claude-token-audit "$ARGUMENTS" --top 20 --recommend
 else
-  claude-token-audit ~/.claude/projects --top 20
+  claude-token-audit ~/.claude/projects --top 20 --recommend
 fi
 ```
 
@@ -29,6 +29,10 @@ Report:
 - observed token buckets: input, output, cache_read, cache_creation;
 - model distribution;
 - query_source distribution: main, subagent, auxiliary;
+- top transcript files and commands observed;
+- generated recommendations with priority, reason, action, and evidence;
 - top likely causes and one safe next experiment.
+
+Privacy: default output uses basename+hash transcript labels and command category+hash labels. Do not ask for `--show-paths` or `--show-commands` unless the user explicitly wants local identifiers in the report. Recommendations are heuristics; treat them as hypotheses, especially with small `files` or `records` counts.
 
 Caveat: Claude Code transcript schemas can change. Treat this as an operational signal, not billing authority. For billing authority, use Claude Console, cloud-provider billing, or configured OpenTelemetry metrics.

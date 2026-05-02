@@ -7,7 +7,7 @@ Claude Code CLI token 절감을 위한 실험용 도구 모음입니다. 전부 
 - `statusline.sh` — context/cost/model을 status line에 표시
 - `trim_command_output.py` — 긴 명령 output을 head/tail/error 중심으로 축약하고 원래 exit code 보존
 - `rewrite_bash_for_token_budget.py` — Claude Code `PreToolUse` hook에서 test/build/lint 명령을 wrapper로 감쌈
-- `claude_transcript_cost_audit.py` — `~/.claude/projects` JSONL transcript에서 usage/cost field를 찾아 합산
+- `claude_transcript_cost_audit.py` — `~/.claude/projects` JSONL transcript에서 usage/cost field를 찾아 합산하고 `--recommend`로 절감 액션 제안
 - `settings.example.json` — project `.claude/settings.json` 예시
 - `aux_ai_delegate.py` — Gemini/Codex 같은 보조 AI CLI를 opt-in으로 호출해 Claude context를 절약
 
@@ -15,12 +15,14 @@ Claude Code CLI token 절감을 위한 실험용 도구 모음입니다. 전부 
 
 ```bash
 python3 claude-token-kit/trim_command_output.py --max-lines 80 -- bash -lc 'seq 1 1000; echo FAIL test_x >&2; exit 1'
-python3 claude-token-kit/claude_transcript_cost_audit.py ~/.claude/projects --top 10
+python3 claude-token-kit/claude_transcript_cost_audit.py ~/.claude/projects --top 10 --recommend
 python3 claude-token-kit/aux_ai_delegate.py status
 python3 claude-token-kit/aux_ai_delegate.py enable --provider gemini
 python3 claude-token-kit/aux_ai_delegate.py ask --provider gemini --prompt "Summarize this log" --context ./log.txt
 python3 claude-token-kit/aux_ai_delegate.py disable
 ```
+
+`claude_transcript_cost_audit.py --recommend`의 기본 출력은 공유 안전성을 위해 transcript 경로를 `basename#hash`, 명령을 `command#hash` 형태로 익명화합니다. 로컬 원문 식별자가 꼭 필요할 때만 `--show-paths` 또는 `--show-commands`를 추가하세요.
 
 Claude Code에 적용하려면 `settings.example.json`을 `.claude/settings.json`으로 복사하되, 먼저 작은 repo에서 quoting/exit code를 확인하세요.
 
