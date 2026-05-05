@@ -16,13 +16,42 @@ import sys
 # Reject shell control syntax before wrapping. The wrapper is intended only for a
 # single safe argv-style command, not arbitrary shell programs.
 SHELL_META_RE = re.compile(r"[;&|<>`$()\n\r\t]")
-WRAPPER_MARKERS = (
+WRAPPER_BASENAMES = frozenset({
     "trim_command_output.py",
     "claude-trim-output",
     "sanitize_output.py",
     "claude-sanitize-output",
-)
+})
 FAIL_OPEN_ENV = "CLAUDE_TOKEN_SANITIZER_FAIL_OPEN"
+
+# kubectl/docker/podman/oc 글로벌 옵션 중 다음 토큰을 value로 소비하는 형태.
+# `-n prod`, `--context=prod`, `-f file.yml` 같은 케이스를 hub로 흡수해
+# `kubectl -n prod logs api`, `docker --context prod logs api`,
+# `docker compose -f compose.yml logs web` 가 sanitize wrapper를 거치도록 한다.
+_VALUE_TAKING_FLAGS = frozenset({
+    "-n", "--namespace",
+    "--context",
+    "--kubeconfig",
+    "--cluster",
+    "--user", "--token",
+    "--as", "--as-group",
+    "-s", "--server",
+    "-c",
+    "-H", "--host",
+    "--config",
+    "--log-level",
+    "-f", "--file",
+    "-p", "--project-name",
+})
+
+# find 가 단순 path listing 이 아니라 임의 명령 출력을 발생시킬 수 있는 액션.
+# 이 액션들은 .env / 자격증명 파일 내용까지 노출 가능하므로 trim 대신 sanitize 로 라우팅한다.
+_FIND_OUTPUT_RISK_ACTIONS = frozenset({
+    "-delete",
+    "-exec", "-execdir",
+    "-ok", "-okdir",
+    "-fprint", "-fprint0", "-fprintf", "-fls",
+})
 
 
 def find_wrapper(kind: str) -> str | None:
@@ -104,36 +133,102 @@ def is_noisy_command(argv: list[str]) -> bool:
     return False
 
 
-def is_dir_traversal_command(argv: list[str]) -> bool:
-    """`find` / `tree` 같은 디렉터리 walk 출력은 path 위주라 trim wrapper로 충분.
+def _skip_leading_flags(rest: list[str]) -> list[str]:
+    """rest 의 앞쪽 `-`/`--` 플래그(와 value-taking 플래그의 다음 토큰)를 건너뛴다.
 
-    경로 노출은 sanitizer가 일부 익명화하지만 secret-bearing 가능성이 낮아
-    test/build 명령과 동일한 trim 라우팅을 사용한다. 짧은 형태(예: `tree --version`,
-    `find --version`)도 wrap 비용은 무시 가능하므로 별도 분기 없이 일률 처리한다.
+    value-taking flag 목록(`_VALUE_TAKING_FLAGS`)에 들지 않은 `-`-시작 토큰은 boolean
+    이라고 가정한다. 알 수 없는 value flag 는 매칭 누락으로 이어지지만, 그래도
+    upper layer 가 미가공 명령으로 떨어뜨리는 안전한 degrade 이므로 보수적으로 처리.
+    """
+    i = 0
+    while i < len(rest):
+        token = rest[i]
+        if not token.startswith("-"):
+            break
+        if "=" in token:
+            i += 1
+            continue
+        if token in _VALUE_TAKING_FLAGS and i + 1 < len(rest):
+            i += 2
+        else:
+            i += 1
+    return rest[i:]
+
+
+def is_dir_traversal_command(argv: list[str]) -> bool:
+    """순수 path-listing 형태의 `find` / `tree` 만 trim wrapper 라우팅 대상.
+
+    `find` 가 `-exec` / `-delete` / `-fprint*` 등 임의 명령 출력을 만들어내는 액션을
+    포함하면 `.env` 같은 자격증명 내용을 흘릴 수 있으므로 본 함수는 False 를 반환하고,
+    `is_log_streaming_command` 가 sanitize 라우팅으로 대신 잡는다. `tree` 는 본질적으로
+    출력 형식이 fixed 이라 별도 분기가 없다.
     """
     if not argv:
         return False
     first = argv[0]
-    return first in {"find", "tree"}
+    if first == "tree":
+        return True
+    if first == "find":
+        return not any(arg in _FIND_OUTPUT_RISK_ACTIONS for arg in argv[1:])
+    return False
 
 
 def is_log_streaming_command(argv: list[str]) -> bool:
-    """`kubectl logs` / `docker logs` / `docker compose logs` 는 production 로그 스트림이라
-    secret leak 위험이 높다. trim 대신 sanitize wrapper로 redact + head/tail 한다.
+    """Production 로그 스트림 / 자격증명을 흘릴 수 있는 명령은 sanitize wrapper 로 라우팅.
+
+    대상:
+    - `kubectl logs` / `oc logs` / `podman logs`
+    - `docker logs` / `docker compose logs` / `docker stack logs` / `podman compose|stack logs`
+    - `docker-compose logs` (v1)
+    - `journalctl` (systemd 로그, secret bearing 가능)
+    - `find` 가 `-exec` / `-delete` / `-fprint` 같은 임의 출력 액션을 포함하는 형태
+
+    글로벌 옵션 (`-n prod`, `--context=stage`, `-f compose.yml`) 도 `_skip_leading_flags`
+    로 흡수한다. 한계: `kubectl exec ... -- cat /var/log/...` 같은 우회는 별도 룰이
+    필요하며 여기서는 처리하지 않는다.
     """
     if not argv:
         return False
     first = argv[0]
     rest = argv[1:]
 
-    if first == "kubectl" and rest and rest[0] == "logs":
+    if first == "journalctl":
         return True
-    if first == "docker" and rest:
-        if rest[0] == "logs":
+    if first == "find" and any(arg in _FIND_OUTPUT_RISK_ACTIONS for arg in rest):
+        return True
+    if first in {"kubectl", "oc"}:
+        rest = _skip_leading_flags(rest)
+        return bool(rest) and rest[0] == "logs"
+    if first == "docker-compose":
+        rest = _skip_leading_flags(rest)
+        return bool(rest) and rest[0] == "logs"
+    if first in {"docker", "podman"}:
+        rest = _skip_leading_flags(rest)
+        if not rest:
+            return False
+        sub = rest[0]
+        if sub == "logs":
             return True
-        if rest[0] in {"compose", "stack"} and len(rest) >= 2 and rest[1] == "logs":
-            return True
+        if sub in {"compose", "stack"}:
+            rest = _skip_leading_flags(rest[1:])
+            return bool(rest) and rest[0] == "logs"
     return False
+
+
+def is_already_wrapped(argv: list[str]) -> bool:
+    """argv 가 이미 trim/sanitize wrapper 호출이면 True.
+
+    bare 호출 (`claude-trim-output ...`), python wrapper 호출
+    (`python3 .../trim_command_output.py ...`), 절대경로 호출 모두 흡수한다.
+    명령 raw 문자열에 substring 검색을 하면 컨테이너 이름이 우연히
+    `claude-sanitize-output` 같으면 false-bypass 되므로 argv 기반으로 판단한다.
+    """
+    if not argv:
+        return False
+    head = argv[0]
+    if re.fullmatch(r"python(?:\d+(?:\.\d+)?)?", os.path.basename(head)) and len(argv) > 1:
+        head = argv[1]
+    return os.path.basename(head) in WRAPPER_BASENAMES
 
 
 def is_sanitizable_output_command(argv: list[str]) -> bool:
@@ -192,12 +287,18 @@ def main() -> int:
         return 0
     command = tool_input.get("command") or ""
 
-    if not command or any(marker in command for marker in WRAPPER_MARKERS):
+    if not command:
         print("{}")
         return 0
 
     argv = split_single_safe_command(command)
     if not argv:
+        print("{}")
+        return 0
+
+    # argv 기반으로 이미 wrap 된 명령인지 검사한다. 단순 substring 매칭은 컨테이너명 등이
+    # 우연히 wrapper 이름과 일치할 때 false-bypass 를 일으킬 수 있다.
+    if is_already_wrapped(argv):
         print("{}")
         return 0
 
