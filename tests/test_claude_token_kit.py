@@ -884,6 +884,133 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertIn("claude-sanitize-output is not installed", hook["permissionDecisionReason"])
             self.assertIn("Search/diff command blocked", proc.stderr)
 
+    def test_rewrite_hook_wraps_dir_traversal_with_trim(self):
+        for script in [KIT_REWRITE, PLUGIN_REWRITE]:
+            for command in ["find . -name '*.py'", "find src -type f", "tree", "tree src/"]:
+                with self.subTest(script=script, command=command):
+                    out = hook_json(script, command)
+                    wrapped = out["hookSpecificOutput"]["updatedInput"]["command"]
+                    self.assertTrue(
+                        "trim_command_output.py" in wrapped or "claude-trim-output" in wrapped,
+                        f"{command} should be routed through the trim wrapper, got {wrapped}",
+                    )
+                    self.assertNotIn("sanitize_output.py", wrapped)
+
+    def test_rewrite_hook_wraps_log_streams_with_sanitizer(self):
+        for script in [KIT_REWRITE, PLUGIN_REWRITE]:
+            for command in [
+                "kubectl logs mypod",
+                "kubectl logs -f mypod",
+                "kubectl logs --since 1h deploy/api",
+                "docker logs mycontainer",
+                "docker logs --tail 200 mycontainer",
+                "docker compose logs web",
+                "docker stack logs mystack",
+            ]:
+                with self.subTest(script=script, command=command):
+                    out = hook_json(script, command)
+                    wrapped = out["hookSpecificOutput"]["updatedInput"]["command"]
+                    self.assertTrue(
+                        "sanitize_output.py" in wrapped or "claude-sanitize-output" in wrapped,
+                        f"{command} should be routed through the sanitize wrapper, got {wrapped}",
+                    )
+                    self.assertNotIn("trim_command_output.py", wrapped)
+
+    def test_rewrite_hook_does_not_wrap_non_log_kubectl_or_docker(self):
+        """`kubectl get` / `docker ps` 같은 짧은 명령은 wrap 대상이 아니다."""
+        for command in [
+            "kubectl get pods",
+            "kubectl describe pod mypod",
+            "kubectl version",
+            "docker ps",
+            "docker images",
+            "docker compose ps",
+        ]:
+            with self.subTest(command=command):
+                self.assertEqual(hook_json(KIT_REWRITE, command), {})
+
+    def test_rewrite_hook_wraps_log_streams_through_global_flags(self):
+        """`-n prod`, `--context=stage`, `--kubeconfig /tmp/kc`, `-f compose.yml` 같은 글로벌
+        옵션 사이에 `logs` 가 끼어 있어도 sanitize wrapper로 라우팅되어야 한다."""
+        for script in [KIT_REWRITE, PLUGIN_REWRITE]:
+            for command in [
+                "kubectl -n prod logs api-pod",
+                "kubectl --context=stage logs deploy/api",
+                "kubectl --kubeconfig /tmp/kc logs api-pod",
+                "docker --context prod logs mycont",
+                "docker compose -f compose.prod.yml logs web",
+                "docker-compose logs web",
+                "podman compose -p myproj logs api",
+            ]:
+                with self.subTest(script=script, command=command):
+                    out = hook_json(script, command)
+                    wrapped = out["hookSpecificOutput"]["updatedInput"]["command"]
+                    self.assertTrue(
+                        "sanitize_output.py" in wrapped or "claude-sanitize-output" in wrapped,
+                        f"{command} 는 sanitize wrapper 로 라우팅되어야 한다 (got {wrapped})",
+                    )
+
+    def test_rewrite_hook_wraps_oc_podman_and_journalctl(self):
+        """OpenShift `oc`, `podman`, `journalctl` 도 secret-bearing 로그 스트림으로 sanitize 라우팅."""
+        for command in [
+            "oc logs api-pod",
+            "oc -n prod logs api-pod",
+            "podman logs cont",
+            "podman -c remote logs cont",
+            "journalctl -u nginx",
+            "journalctl -xe",
+        ]:
+            with self.subTest(command=command):
+                out = hook_json(KIT_REWRITE, command)
+                wrapped = out["hookSpecificOutput"]["updatedInput"]["command"]
+                self.assertTrue(
+                    "sanitize_output.py" in wrapped or "claude-sanitize-output" in wrapped,
+                    f"{command} 는 sanitize wrapper 로 라우팅되어야 한다 (got {wrapped})",
+                )
+
+    def test_rewrite_hook_routes_find_with_output_risk_actions_to_sanitizer(self):
+        """`find -exec` / `-delete` 같은 액션은 임의 명령 출력을 만들어 .env 등 secret 노출
+        가능 → trim 대신 sanitize 로 라우팅되어야 한다. 순수 path-listing form 은 trim 그대로."""
+        sanitize_targets = [
+            "find . -exec cat .env {} +",
+            "find . -delete",
+            "find /var/log -fprintf out.txt %p",
+        ]
+        trim_targets = [
+            "find . -name '*.py'",
+            "find src -type f",
+        ]
+        for command in sanitize_targets:
+            with self.subTest(command=command):
+                out = hook_json(KIT_REWRITE, command)
+                wrapped = out["hookSpecificOutput"]["updatedInput"]["command"]
+                self.assertTrue(
+                    "sanitize_output.py" in wrapped or "claude-sanitize-output" in wrapped,
+                    f"{command} should be sanitize-wrapped (got {wrapped})",
+                )
+        for command in trim_targets:
+            with self.subTest(command=command):
+                out = hook_json(KIT_REWRITE, command)
+                wrapped = out["hookSpecificOutput"]["updatedInput"]["command"]
+                self.assertTrue(
+                    "trim_command_output.py" in wrapped or "claude-trim-output" in wrapped,
+                    f"{command} should be trim-wrapped (got {wrapped})",
+                )
+
+    def test_rewrite_hook_double_wrap_check_uses_argv_not_substring(self):
+        """컨테이너/대상 이름이 우연히 wrapper 와 겹쳐도 wrap 우회되지 않아야 한다.
+        argv[0] 또는 python wrapper 의 argv[1] 만 검사해야 false-bypass 가 없다."""
+        for command in [
+            "docker logs claude-sanitize-output",
+            "kubectl logs claude-trim-output",
+            "find . -name claude-sanitize-output.log",
+        ]:
+            with self.subTest(command=command):
+                out = hook_json(KIT_REWRITE, command)
+                # 어떤 wrapper 라도 거치면 OK — bypass 만 회귀
+                self.assertIn("hookSpecificOutput", out, f"{command} 는 wrap 대상인데 noop 처리됨")
+                self.assertIn("updatedInput", out["hookSpecificOutput"])
+
     def test_large_read_guard_blocks_large_whole_file_reads(self):
         for script in READ_GUARD_SCRIPTS:
             with self.subTest(script=script):
