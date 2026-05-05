@@ -93,6 +93,8 @@ JSON 출력은 `cache_metrics` 블록(`cache_hit_rate`, `cache_amortization`, `c
 
 `claude-token-statusline`은 project settings로 활성화했을 때 token/cost/model 정보를 짧은 statusline으로 출력합니다. Claude Code statusline payload에 읽기 가능한 `transcript_path`가 포함되면 `cache <N>%`도 함께 표시됩니다 — 이는 transcript 끝부분에서 계산한 cache_read 비중입니다. transcript가 없거나 읽을 수 없거나 `python3`가 없으면 cache 라벨만 빠지고 나머지 statusline은 그대로 동작합니다.
 
+`claude-token-failed-nudge`는 같은 Bash 명령이 같은 세션에서 연속 두 번 실패하면 `/clear` (또는 `/compact focus on …`)을 권유하는 선택적 `PostToolUse` hook 입니다. 실패 시도가 누적되면 대화 컨텍스트가 오염되고 prompt cache 가 매 retry 마다 재워밍되어 토큰 비용이 급증합니다. 본 hook 은 두 번째 실패 시 짧은 추가 컨텍스트만 주입해 방향 전환을 유도합니다 (실행은 막지 않습니다). 기본 OFF이며 `claude-token-setup --failed-attempt-nudge` (또는 대화형 마법사의 "yes")로 명시적으로 켤 때만 활성화됩니다. 상태는 프로젝트 로컬 `.claude-token-optimizer/failures-<session>.json` (파일 모드 `0o600`)에 저장됩니다.
+
 `claude-token-rewrite-bash`는 예시 settings에서 사용하는 opt-in `PreToolUse` Bash hook입니다. 안전한 단일 test/build/lint 명령과 `find`/`tree` 같은 디렉터리 walk 출력은 `claude-trim-output`으로 감싸 head/tail 트리밍을 적용하고, 안전한 단일 `rg`/`grep`/`git diff` 계열 명령과 production 로그 스트림(`kubectl logs`, `docker logs`, `docker compose logs`, `docker stack logs`)은 `claude-sanitize-output`으로 감싸 secret redact와 트리밍을 함께 적용합니다. 파이프·리디렉션·명령 치환 등 컴파운드 셸 구문은 wrap 대상에서 제외해 단일 안전 argv 명령에만 적용됩니다.
 
 ```bash
