@@ -884,6 +884,51 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertIn("claude-sanitize-output is not installed", hook["permissionDecisionReason"])
             self.assertIn("Search/diff command blocked", proc.stderr)
 
+    def test_rewrite_hook_wraps_dir_traversal_with_trim(self):
+        for script in [KIT_REWRITE, PLUGIN_REWRITE]:
+            for command in ["find . -name '*.py'", "find src -type f", "tree", "tree src/"]:
+                with self.subTest(script=script, command=command):
+                    out = hook_json(script, command)
+                    wrapped = out["hookSpecificOutput"]["updatedInput"]["command"]
+                    self.assertTrue(
+                        "trim_command_output.py" in wrapped or "claude-trim-output" in wrapped,
+                        f"{command} should be routed through the trim wrapper, got {wrapped}",
+                    )
+                    self.assertNotIn("sanitize_output.py", wrapped)
+
+    def test_rewrite_hook_wraps_log_streams_with_sanitizer(self):
+        for script in [KIT_REWRITE, PLUGIN_REWRITE]:
+            for command in [
+                "kubectl logs mypod",
+                "kubectl logs -f mypod",
+                "kubectl logs --since 1h deploy/api",
+                "docker logs mycontainer",
+                "docker logs --tail 200 mycontainer",
+                "docker compose logs web",
+                "docker stack logs mystack",
+            ]:
+                with self.subTest(script=script, command=command):
+                    out = hook_json(script, command)
+                    wrapped = out["hookSpecificOutput"]["updatedInput"]["command"]
+                    self.assertTrue(
+                        "sanitize_output.py" in wrapped or "claude-sanitize-output" in wrapped,
+                        f"{command} should be routed through the sanitize wrapper, got {wrapped}",
+                    )
+                    self.assertNotIn("trim_command_output.py", wrapped)
+
+    def test_rewrite_hook_does_not_wrap_non_log_kubectl_or_docker(self):
+        """`kubectl get` / `docker ps` 같은 짧은 명령은 wrap 대상이 아니다."""
+        for command in [
+            "kubectl get pods",
+            "kubectl describe pod mypod",
+            "kubectl version",
+            "docker ps",
+            "docker images",
+            "docker compose ps",
+        ]:
+            with self.subTest(command=command):
+                self.assertEqual(hook_json(KIT_REWRITE, command), {})
+
     def test_large_read_guard_blocks_large_whole_file_reads(self):
         for script in READ_GUARD_SCRIPTS:
             with self.subTest(script=script):

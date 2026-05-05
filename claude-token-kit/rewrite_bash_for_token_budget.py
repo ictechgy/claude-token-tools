@@ -104,6 +104,38 @@ def is_noisy_command(argv: list[str]) -> bool:
     return False
 
 
+def is_dir_traversal_command(argv: list[str]) -> bool:
+    """`find` / `tree` 같은 디렉터리 walk 출력은 path 위주라 trim wrapper로 충분.
+
+    경로 노출은 sanitizer가 일부 익명화하지만 secret-bearing 가능성이 낮아
+    test/build 명령과 동일한 trim 라우팅을 사용한다. 짧은 형태(예: `tree --version`,
+    `find --version`)도 wrap 비용은 무시 가능하므로 별도 분기 없이 일률 처리한다.
+    """
+    if not argv:
+        return False
+    first = argv[0]
+    return first in {"find", "tree"}
+
+
+def is_log_streaming_command(argv: list[str]) -> bool:
+    """`kubectl logs` / `docker logs` / `docker compose logs` 는 production 로그 스트림이라
+    secret leak 위험이 높다. trim 대신 sanitize wrapper로 redact + head/tail 한다.
+    """
+    if not argv:
+        return False
+    first = argv[0]
+    rest = argv[1:]
+
+    if first == "kubectl" and rest and rest[0] == "logs":
+        return True
+    if first == "docker" and rest:
+        if rest[0] == "logs":
+            return True
+        if rest[0] in {"compose", "stack"} and len(rest) >= 2 and rest[1] == "logs":
+            return True
+    return False
+
+
 def is_sanitizable_output_command(argv: list[str]) -> bool:
     if not argv:
         return False
@@ -169,14 +201,14 @@ def main() -> int:
         print("{}")
         return 0
 
-    if is_noisy_command(argv):
+    if is_noisy_command(argv) or is_dir_traversal_command(argv):
         wrapper = find_wrapper("trim")
         if wrapper is None:
             print("claude-token-rewrite-bash: trim wrapper not found; leaving command unchanged", file=sys.stderr)
             print("{}")
             return 0
         wrapped = build_wrapped_command(wrapper, argv)
-    elif is_sanitizable_output_command(argv):
+    elif is_sanitizable_output_command(argv) or is_log_streaming_command(argv):
         wrapper = find_wrapper("sanitize")
         if wrapper is None:
             reason = (
