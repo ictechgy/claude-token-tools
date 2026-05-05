@@ -70,6 +70,22 @@ class UsageSummary:
     def total_tokens(self) -> int:
         return sum(self.tokens.values())
 
+    @property
+    def cache_hit_rate(self) -> float:
+        """cache_read의 입력 측 비중. 1에 가까울수록 캐시가 재활용되고 있음."""
+        cr = self.tokens.get("cache_read", 0)
+        cc = self.tokens.get("cache_creation", 0)
+        inp = self.tokens.get("input", 0)
+        denom = cr + cc + inp
+        return (cr / denom) if denom > 0 else 0.0
+
+    @property
+    def cache_amortization(self) -> float:
+        """cache_read / cache_creation. 캐시에 한 번 쓴 prefix가 평균 몇 번 재사용되었는지의 근사값."""
+        cc = self.tokens.get("cache_creation", 0)
+        cr = self.tokens.get("cache_read", 0)
+        return (cr / cc) if cc > 0 else 0.0
+
     def note_error(self, message: str) -> None:
         if len(self.parse_errors) < MAX_ERROR_EXAMPLES:
             self.parse_errors.append(message)
@@ -345,14 +361,42 @@ def build_recommendations(summary: UsageSummary, top: int) -> list[dict[str, Any
             "P0",
             {"input_tokens": input_tokens, "total_tokens": total},
         ))
-    if cache_creation >= 2_000 and cache_read < cache_creation:
+    if cache_creation >= 2_000 and summary.cache_amortization < 1.0:
         recs.append(recommendation(
             "improve-prompt-cache-reuse",
             "Prompt cache reuse looks low",
-            "Cache creation tokens exceed cache read tokens, which can indicate unstable prompt prefixes or frequent session resets.",
+            (
+                f"Cache amortization is {summary.cache_amortization:.2f}x "
+                f"(cache_read={cache_read}, cache_creation={cache_creation}); each cached prefix is barely re-served."
+            ),
             "Keep stable instructions early, move volatile context later, and avoid editing large instruction files during active sessions.",
             "P1",
-            {"cache_creation": cache_creation, "cache_read": cache_read},
+            {
+                "cache_creation": cache_creation,
+                "cache_read": cache_read,
+                "cache_amortization": round(summary.cache_amortization, 4),
+                "cache_hit_rate": round(summary.cache_hit_rate, 4),
+            },
+        ))
+    elif cache_creation >= 50_000 and 1.0 <= summary.cache_amortization < 5.0:
+        recs.append(recommendation(
+            "evaluate-1h-ttl-cache",
+            "Cache writes are large; evaluate the 1h TTL cache beta",
+            (
+                f"Cache amortization {summary.cache_amortization:.2f}x with {cache_creation} write tokens; "
+                "absolute write cost is high and reuse is moderate."
+            ),
+            (
+                "If sessions reuse the same prefix beyond the 5-minute default TTL, evaluate the 1h prompt cache "
+                "beta (write 2x, read 0.1x). It pays off when reuse spans the gap between two 5-min cache writes."
+            ),
+            "P2",
+            {
+                "cache_creation": cache_creation,
+                "cache_read": cache_read,
+                "cache_amortization": round(summary.cache_amortization, 4),
+                "cache_hit_rate": round(summary.cache_hit_rate, 4),
+            },
         ))
 
     for command, record_count in summary.by_command.most_common(top):
@@ -415,6 +459,13 @@ def summary_json(summary: UsageSummary, top: int = 15, include_recommendations: 
         "parse_errors": summary.parse_errors,
         "total_tokens": summary.total_tokens,
         "tokens": dict(summary.tokens),
+        "cache_metrics": {
+            "cache_hit_rate": round(summary.cache_hit_rate, 4),
+            "cache_amortization": round(summary.cache_amortization, 4),
+            "cache_read_tokens": summary.tokens.get("cache_read", 0),
+            "cache_creation_tokens": summary.tokens.get("cache_creation", 0),
+            "input_tokens": summary.tokens.get("input", 0),
+        },
         "cost_usd_observed": summary.cost_usd,
         "by_model": {k: dict(v) for k, v in summary.by_model.items()},
         "by_query_source": {k: dict(v) for k, v in summary.by_query_source.items()},
@@ -466,6 +517,12 @@ def main() -> int:
         for warning in summary.parse_errors:
             print(f"  - {warning}")
     print_counter("Token buckets", summary.tokens, args.top)
+
+    print("\nCache reuse")
+    print(f"  cache_hit_rate           {summary.cache_hit_rate:.2%}")
+    print(f"  cache_amortization       {summary.cache_amortization:.2f}x")
+    print(f"  cache_read_tokens        {summary.tokens.get('cache_read', 0):12d}")
+    print(f"  cache_creation_tokens    {summary.tokens.get('cache_creation', 0):12d}")
 
     model_totals = Counter({model: sum(tokens.values()) for model, tokens in summary.by_model.items()})
     print_counter("By model", model_totals, args.top)

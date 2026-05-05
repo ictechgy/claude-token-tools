@@ -1242,6 +1242,165 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     )
                     self.assertIn(str(sample), shown.stdout)
 
+    def test_transcript_audit_reports_cache_metrics_in_json_and_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / "session.jsonl"
+            sample.write_text(
+                json.dumps({
+                    "message": {
+                        "model": "claude-sonnet-test",
+                        "usage": {
+                            "input_tokens": 100,
+                            "output_tokens": 50,
+                            "cache_read_input_tokens": 800,
+                            "cache_creation_input_tokens": 200,
+                        },
+                    },
+                }) + "\n",
+                encoding="utf-8",
+            )
+            for script in [KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "claude-token-audit"]:
+                with self.subTest(script=script):
+                    proc = subprocess.run(
+                        [sys.executable, str(script), str(sample), "--json"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    metrics = data["cache_metrics"]
+                    self.assertEqual(metrics["cache_read_tokens"], 800)
+                    self.assertEqual(metrics["cache_creation_tokens"], 200)
+                    self.assertEqual(metrics["input_tokens"], 100)
+                    # cache_read / (cache_read + cache_creation + input) = 800 / 1100
+                    self.assertAlmostEqual(metrics["cache_hit_rate"], 800 / 1100, places=3)
+                    self.assertAlmostEqual(metrics["cache_amortization"], 4.0, places=3)
+
+                    text = subprocess.run(
+                        [sys.executable, str(script), str(sample)],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertIn("Cache reuse", text.stdout)
+                    self.assertIn("cache_hit_rate", text.stdout)
+                    self.assertIn("cache_amortization", text.stdout)
+
+    def test_transcript_audit_recommends_improve_cache_reuse_when_amortization_low(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / "session.jsonl"
+            sample.write_text(
+                json.dumps({
+                    "message": {
+                        "usage": {
+                            "input_tokens": 1000,
+                            "output_tokens": 200,
+                            "cache_creation_input_tokens": 4000,
+                            "cache_read_input_tokens": 100,
+                        },
+                    },
+                }) + "\n",
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "claude_transcript_cost_audit.py"), str(sample), "--json", "--recommend"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            recs_by_id = {rec["id"]: rec for rec in data["recommendations"]}
+            self.assertIn("improve-prompt-cache-reuse", recs_by_id)
+            evidence = recs_by_id["improve-prompt-cache-reuse"]["evidence"]
+            self.assertEqual(evidence["cache_creation"], 4000)
+            self.assertEqual(evidence["cache_read"], 100)
+            self.assertLess(evidence["cache_amortization"], 1.0)
+
+    def test_transcript_audit_recommends_1h_ttl_when_writes_large_and_amortization_moderate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / "session.jsonl"
+            sample.write_text(
+                json.dumps({
+                    "message": {
+                        "usage": {
+                            "input_tokens": 2000,
+                            "cache_creation_input_tokens": 60_000,
+                            "cache_read_input_tokens": 150_000,
+                        },
+                    },
+                }) + "\n",
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "claude_transcript_cost_audit.py"), str(sample), "--json", "--recommend"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            recs_by_id = {rec["id"]: rec for rec in data["recommendations"]}
+            self.assertIn("evaluate-1h-ttl-cache", recs_by_id)
+            self.assertNotIn("improve-prompt-cache-reuse", recs_by_id)
+
+    def test_statusline_renders_cache_hit_rate_from_transcript_tail(self):
+        for script in [KIT_DIR / "statusline.sh", PLUGIN_BIN / "claude-token-statusline"]:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    transcript = Path(tmp) / "session.jsonl"
+                    transcript.write_text(
+                        json.dumps({"message": {"usage": {
+                            "input_tokens": 100,
+                            "cache_read_input_tokens": 800,
+                            "cache_creation_input_tokens": 100,
+                        }}}) + "\n",
+                        encoding="utf-8",
+                    )
+                    payload = {
+                        "model": {"display_name": "Sonnet"},
+                        "context_window": {"used_percentage": 42},
+                        "cost": {"total_cost_usd": 0.123},
+                        "workspace": {"current_dir": str(transcript.parent)},
+                        "transcript_path": str(transcript),
+                    }
+                    proc = subprocess.run(
+                        ["bash", str(script)],
+                        input=json.dumps(payload),
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertIn("cache ", proc.stdout)
+                    self.assertRegex(proc.stdout, r"cache \d+%")
+
+    def test_statusline_omits_cache_label_when_transcript_unavailable(self):
+        for script in [KIT_DIR / "statusline.sh", PLUGIN_BIN / "claude-token-statusline"]:
+            with self.subTest(script=script):
+                payload = {
+                    "model": {"display_name": "Sonnet"},
+                    "context_window": {"used_percentage": 10},
+                    "cost": {"total_cost_usd": 0.0},
+                    "workspace": {"current_dir": "/tmp/foo"},
+                }
+                proc = subprocess.run(
+                    ["bash", str(script)],
+                    input=json.dumps(payload),
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertNotIn("cache ", proc.stdout)
+
+                bad_payload = dict(payload)
+                bad_payload["transcript_path"] = "/nonexistent/path-should-not-exist.jsonl"
+                proc2 = subprocess.run(
+                    ["bash", str(script)],
+                    input=json.dumps(bad_payload),
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertNotIn("cache ", proc2.stdout)
+
     def test_token_diet_scan_reports_missing_denies_and_context_bloat(self):
         for script in DIET_SCRIPTS:
             with self.subTest(script=script):
