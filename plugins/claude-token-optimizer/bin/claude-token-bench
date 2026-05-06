@@ -88,14 +88,17 @@ USAGE_KEY_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
 COST_KEYS = ("total_cost_usd", "cost_usd", "costUSD")
 
 
+# 재현성 우선: fixture 에 명시되지 않은 필드는 argv 로 전달하지 않는다.
+# 사용자가 baseline 으로 의도한 변형이 implicit default(예: effort="medium")로 인해
+# 왜곡되지 않도록, 파싱 단계에서 명시 여부를 그대로 보존한다.
 @dataclass
 class TaskFixture:
     id: str
     prompt: str
     model: str = "sonnet"
-    effort: str = "medium"
+    effort: str | None = None
     max_turns: int = 3
-    max_budget_usd: float | None = 1.0
+    max_budget_usd: float | None = None
     allowed_tools: list[str] = field(default_factory=list)
     success_command: str | None = None
     success_cwd: str = "."
@@ -128,13 +131,24 @@ def parse_tasks(path: Path) -> list[TaskFixture]:
     for item in raw:
         if not isinstance(item, dict):
             raise SystemExit(f"task entry must be a JSON object: {item}")
+        effort_raw = item.get("effort")
+        budget_raw = item.get("max_budget_usd")
+        if budget_raw is not None:
+            try:
+                budget = float(budget_raw)
+            except (TypeError, ValueError):
+                raise SystemExit(f"task {item.get('id')} max_budget_usd must be number or null")
+            if budget <= 0:
+                raise SystemExit(f"task {item.get('id')} max_budget_usd must be > 0 (use null for unlimited)")
+        else:
+            budget = None
         fixtures.append(TaskFixture(
             id=str(item["id"]),
             prompt=str(item["prompt"]),
             model=str(item.get("model", "sonnet")),
-            effort=str(item.get("effort", "medium")),
+            effort=str(effort_raw) if effort_raw is not None else None,
             max_turns=int(item.get("max_turns", 3)),
-            max_budget_usd=item.get("max_budget_usd"),
+            max_budget_usd=budget,
             allowed_tools=list(item.get("allowed_tools", [])),
             success_command=item.get("success_command"),
             success_cwd=str(item.get("success_cwd", ".")),
@@ -158,36 +172,45 @@ def parse_variants(path: Path) -> list[Variant]:
 
 
 def collect_usage(payload: Any) -> tuple[dict[str, int], float]:
-    """`claude -p --output-format json` 응답에서 token / cost 합산.
+    """`claude -p --output-format json` 응답에서 token / cost 추출.
 
-    JSON 구조는 버전별로 다를 수 있어 dict/list 를 재귀적으로 walk 하며
-    알려진 키만 합산한다.
+    의도된 정책: 한 응답에 top-level usage 와 nested per-message usage 가 동시에 있으면
+    이중 합산이 되어 비용이 과대 보고된다. 따라서 각 bucket / cost 모두 **첫 매칭** 만
+    채택한다 (top-level → BFS 순서). 응답 구조가 바뀌어 첫 매칭이 의도와 다른 경우에는
+    fixture/variant 단위로 측정 결과를 점검하라.
     """
     tokens: dict[str, int] = {key: 0 for key, _ in USAGE_KEY_GROUPS}
+    seen_token: dict[str, bool] = {key: False for key, _ in USAGE_KEY_GROUPS}
     cost = 0.0
-    stack: list[Any] = [payload]
     seen_cost = False
-    while stack:
-        cur = stack.pop()
+    # BFS 로 walk 해 top-level dict 가 nested dict 보다 먼저 평가되도록 한다.
+    queue: list[Any] = [payload]
+    while queue:
+        cur = queue.pop(0)
         if isinstance(cur, dict):
             for bucket, keys in USAGE_KEY_GROUPS:
+                if seen_token[bucket]:
+                    continue
                 for key in keys:
                     val = cur.get(key)
                     if isinstance(val, bool):
                         continue
                     if isinstance(val, (int, float)):
-                        tokens[bucket] += int(val)
+                        tokens[bucket] = int(val)
+                        seen_token[bucket] = True
                         break
-            for key in COST_KEYS:
-                val = cur.get(key)
-                if isinstance(val, bool):
-                    continue
-                if isinstance(val, (int, float)) and not seen_cost:
-                    cost = float(val)
-                    seen_cost = True
-            stack.extend(cur.values())
+            if not seen_cost:
+                for key in COST_KEYS:
+                    val = cur.get(key)
+                    if isinstance(val, bool):
+                        continue
+                    if isinstance(val, (int, float)):
+                        cost = float(val)
+                        seen_cost = True
+                        break
+            queue.extend(cur.values())
         elif isinstance(cur, list):
-            stack.extend(cur)
+            queue.extend(cur)
     return tokens, cost
 
 
@@ -200,8 +223,16 @@ def claude_version(claude_bin: str) -> str:
 
 
 def build_claude_argv(claude_bin: str, task: TaskFixture, variant: Variant) -> list[str]:
-    argv = [claude_bin, "-p", "--model", task.model, "--effort", task.effort,
+    """`claude -p` argv 를 빌드한다.
+
+    fixture 에 명시되지 않은 옵션(effort, max_budget_usd) 은 argv 에서 빠진다.
+    이렇게 해야 baseline variant 의 실제 의미(=defaults 그대로)가 implicit
+    runner default 로 왜곡되지 않는다.
+    """
+    argv = [claude_bin, "-p", "--model", task.model,
             "--max-turns", str(task.max_turns), "--output-format", "json"]
+    if task.effort:
+        argv.extend(["--effort", task.effort])
     if task.max_budget_usd is not None:
         argv.extend(["--max-budget-usd", str(task.max_budget_usd)])
     if task.allowed_tools:
@@ -211,12 +242,30 @@ def build_claude_argv(claude_bin: str, task: TaskFixture, variant: Variant) -> l
     return argv
 
 
+# shlex.split 은 shell injection 은 막지만 `true ; echo pwned` 같은 입력을 그대로
+# `["true", ";", "echo", "pwned"]` 로 분해해 /usr/bin/true 가 ";"·"echo"·"pwned" 를
+# 그냥 인자로 무시하고 success=true 로 끝나는 false-positive 를 만들 수 있다.
+# 따라서 shlex 분해 결과 토큰에 셸 합성 의도를 가진 것으로 보이는 문자가 포함되면 거부한다.
+_SHELL_META_TOKENS = frozenset({";", "&&", "||", "|", "&", "<", ">", ">>", "<<", "<<<"})
+
+
+def _has_shell_meta(argv: list[str]) -> bool:
+    for tok in argv:
+        if tok in _SHELL_META_TOKENS:
+            return True
+        # 토큰 안에 `$( ... )` / 백틱 같은 명령 치환 흔적이 있어도 거부.
+        if "$(" in tok or "`" in tok:
+            return True
+    return False
+
+
 def run_success_command(task: TaskFixture, project_root: Path) -> tuple[bool, str]:
     """fixture 의 success_command 를 실행한다.
 
-    shell 메타문자 없이 단일 argv 형태만 받아 `shell=False` 로 실행한다. 파이프·리디렉션
-    같은 shell 합성이 필요하면 헬퍼 스크립트를 만들어 그 경로를 success_command 로 둔다.
-    이렇게 하면 fixture JSON 자체가 shell injection surface 가 되지 않는다.
+    - `shlex.split + shell=False` 로 단일 argv 만 실행한다.
+    - 분해된 토큰에 셸 합성 의도(`;`, `&&`, `|`, `$()`, 백틱 등)가 있으면 거부한다.
+      `success_command` 는 단일 검증 명령 또는 헬퍼 스크립트 한 개의 경로여야 한다.
+    - `success_cwd` 가 project_root 밖으로 escape 하면 거부한다 (..//../etc 같은 케이스).
     """
     if not task.success_command:
         return True, "no success_command configured"
@@ -226,7 +275,14 @@ def run_success_command(task: TaskFixture, project_root: Path) -> tuple[bool, st
         return False, f"success_command parse error: {exc}"
     if not argv:
         return False, "success_command parsed to empty argv"
+    if _has_shell_meta(argv):
+        return False, "success_command contains shell-composition tokens (use a helper script)"
+    project_root_resolved = project_root.resolve()
     cwd = (project_root / task.success_cwd).resolve()
+    try:
+        cwd.relative_to(project_root_resolved)
+    except ValueError:
+        return False, f"success_cwd escapes project_root: {cwd}"
     try:
         proc = subprocess.run(argv, cwd=cwd, text=True, capture_output=True, timeout=600)
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -371,11 +427,16 @@ def main() -> int:
             continue
         print(f"run {task.id}/{variant.name} ...", flush=True)
         result = run_fixture(task, variant, args.claude_bin, project_root, args.dry_run)
-        append_csv(args.csv, claude_ver, result)
+        # dry-run row 는 CSV 에 적재하지 않는다. 적재하면 (a) tokens=0/cost=0 이 평균을
+        # 깎고, (b) --resume 이 그 (task, variant) 를 skip 해 실제 측정값이 영구 누락된다.
+        if not args.dry_run:
+            append_csv(args.csv, claude_ver, result)
         completed += 1
         status = "ok" if result.success else "FAIL"
-        print(f"  {status} tokens={sum(result.tokens.values())} cost=${result.cost_usd:.4f} {result.notes}")
-    print(f"completed {completed} run(s); results in {args.csv}")
+        suffix = "" if not args.dry_run else " (dry-run; CSV not updated)"
+        print(f"  {status} tokens={sum(result.tokens.values())} cost=${result.cost_usd:.4f} {result.notes}{suffix}")
+    target = args.csv if not args.dry_run else "(dry-run; no CSV writes)"
+    print(f"completed {completed} run(s); results in {target}")
     return 0
 
 
