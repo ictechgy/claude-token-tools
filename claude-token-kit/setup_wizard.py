@@ -52,6 +52,7 @@ RECOMMENDED_DENIES = [
 HELPER_STATUSLINE = "claude-token-statusline"
 HELPER_REWRITE_BASH = "claude-token-rewrite-bash"
 HELPER_GUARD_READ = "claude-token-guard-read"
+HELPER_FAILED_NUDGE = "claude-token-failed-nudge"
 DEFAULT_MODEL = "sonnet"
 DEFAULT_EFFORT = "medium"
 
@@ -65,6 +66,8 @@ class Choices:
     model_defaults: bool = True
     aux_provider: str = "none"
     auto_delegate: bool = False
+    # 동일 Bash 명령이 두 번 연속 실패하면 /clear 권유 — 새 기능이라 기본 OFF.
+    failed_attempt_nudge: bool = False
 
 
 @dataclass
@@ -189,16 +192,21 @@ def matcher_covers(existing: Any, desired: str) -> bool:
 
 
 def helper_command(helper_name: str, kit_script: str, *, shell: str | None = None) -> str:
+    """hook 에 기록할 단일 셸 명령 문자열을 반환한다.
+
+    경로에 공백이나 셸 메타문자가 들어와도 안전하도록 모든 분기에서 `shlex.join` 으로
+    quote 한다 (PATH 에서 찾은 bare helper name 만 quote 불필요).
+    """
     found = shutil.which(helper_name)
     if found:
         return helper_name
     script_dir = Path(__file__).resolve().parent
     colocated = script_dir / helper_name
     if colocated.exists() and os.access(colocated, os.X_OK):
-        return str(colocated)
+        return shlex.join([str(colocated)])
     repo_plugin = script_dir.parent / "plugins" / "claude-token-optimizer" / "bin" / helper_name
     if repo_plugin.exists() and os.access(repo_plugin, os.X_OK):
-        return str(repo_plugin)
+        return shlex.join([str(repo_plugin)])
     kit_path = script_dir / kit_script
     if kit_path.exists():
         prefix = [shell] if shell else [sys.executable]
@@ -224,6 +232,13 @@ def read_hook_setting() -> dict[str, Any]:
     }
 
 
+def failed_nudge_setting() -> dict[str, Any]:
+    return {
+        "matcher": "Bash",
+        "hooks": [{"type": "command", "command": helper_command(HELPER_FAILED_NUDGE, "failed_attempt_nudge.py")}],
+    }
+
+
 def command_matches(existing: str, desired: str) -> bool:
     if existing == desired:
         return True
@@ -244,22 +259,38 @@ def has_hook_command(pre_tool_use: list[Any], matcher: str, command: str) -> boo
 
 
 def ensure_pre_tool_hook(settings: dict[str, Any], hook: dict[str, Any], command: str, label: str, actions: list[str]) -> None:
+    _ensure_tool_hook(settings, hook, command, label, actions, event="PreToolUse")
+
+
+def ensure_post_tool_hook(settings: dict[str, Any], hook: dict[str, Any], command: str, label: str, actions: list[str]) -> None:
+    _ensure_tool_hook(settings, hook, command, label, actions, event="PostToolUse")
+
+
+def _ensure_tool_hook(
+    settings: dict[str, Any],
+    hook: dict[str, Any],
+    command: str,
+    label: str,
+    actions: list[str],
+    *,
+    event: str,
+) -> None:
     hooks = settings.get("hooks")
     if hooks is None:
         hooks = {}
         settings["hooks"] = hooks
     if not isinstance(hooks, dict):
         raise SystemExit("Refusing to replace non-object settings.hooks; repair it manually first.")
-    pre = hooks.get("PreToolUse")
-    if pre is None:
-        pre = []
-        hooks["PreToolUse"] = pre
-    if not isinstance(pre, list):
-        raise SystemExit("Refusing to replace non-list settings.hooks.PreToolUse; repair it manually first.")
+    bucket = hooks.get(event)
+    if bucket is None:
+        bucket = []
+        hooks[event] = bucket
+    if not isinstance(bucket, list):
+        raise SystemExit(f"Refusing to replace non-list settings.hooks.{event}; repair it manually first.")
     matcher = str(hook.get("matcher") or "")
-    if has_hook_command(pre, matcher, command):
+    if has_hook_command(bucket, matcher, command):
         return
-    pre.append(copy.deepcopy(hook))
+    bucket.append(copy.deepcopy(hook))
     actions.append(f"enabled {label} hook via {command}")
 
 
@@ -289,13 +320,19 @@ def apply_choices(settings: dict[str, Any], choices: Choices) -> list[str]:
         read_hook = read_hook_setting()
         read_command = read_hook["hooks"][0]["command"]
         ensure_pre_tool_hook(settings, read_hook, read_command, "large Read guard", actions)
+    if choices.failed_attempt_nudge:
+        nudge_hook = failed_nudge_setting()
+        nudge_command = nudge_hook["hooks"][0]["command"]
+        ensure_post_tool_hook(settings, nudge_hook, nudge_command, "failed-attempt /clear nudge", actions)
     return actions
 
 
 def ensure_private_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
     try:
-        os.chmod(path, 0o700)
+        # owner-only directory access — 디렉터리에 자격증명/세션 상태가 들어갈 수 있어
+        # 의도적으로 가장 좁은 권한을 적용한다.
+        os.chmod(path, stat.S_IRWXU)
     except OSError:
         pass
 
@@ -486,6 +523,10 @@ def interactive_choices(defaults: Choices) -> Choices:
         read_guard=prompt_bool("Enable large Read guard?", defaults.read_guard),
         model_defaults=prompt_bool("Set missing defaults to model=sonnet and effortLevel=medium?", defaults.model_defaults),
         aux_provider="none",
+        failed_attempt_nudge=prompt_bool(
+            "Enable failed-attempt /clear nudge? (PostToolUse hook on Bash; off by default)",
+            defaults.failed_attempt_nudge,
+        ),
     )
     if prompt_bool("Enable auxiliary AI delegation now? This may send selected context to Gemini/Codex.", False):
         choices.aux_provider = prompt_provider()
@@ -505,6 +546,7 @@ def choices_from_args(args: argparse.Namespace) -> Choices:
         model_defaults=not args.no_model_defaults,
         aux_provider=args.aux_provider,
         auto_delegate=args.auto_delegate,
+        failed_attempt_nudge=args.failed_attempt_nudge,
     )
 
 
@@ -612,6 +654,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--auto-delegate",
         action="store_true",
         help="also allow enabled plugin skills to auto-delegate safe read-only context; requires --aux-provider",
+    )
+    parser.add_argument(
+        "--failed-attempt-nudge",
+        action="store_true",
+        help="enable PostToolUse Bash hook that suggests /clear when the same command fails twice in a row (off by default)",
     )
     return parser
 

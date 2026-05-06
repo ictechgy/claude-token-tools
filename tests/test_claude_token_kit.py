@@ -20,6 +20,7 @@ IMPLEMENTATION_PAIRS = [
     (KIT_DIR / "aux_ai_delegate.py", PLUGIN_BIN / "claude-token-delegate"),
     (KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "claude-token-audit"),
     (KIT_DIR / "claude_token_diet.py", PLUGIN_BIN / "claude-token-diet"),
+    (KIT_DIR / "failed_attempt_nudge.py", PLUGIN_BIN / "claude-token-failed-nudge"),
     (KIT_DIR / "guard_large_read.py", PLUGIN_BIN / "claude-token-guard-read"),
     (KIT_DIR / "read_symbol.py", PLUGIN_BIN / "claude-read-symbol"),
     (KIT_DIR / "rewrite_bash_for_token_budget.py", PLUGIN_BIN / "claude-token-rewrite-bash"),
@@ -34,6 +35,7 @@ SETUP_SCRIPTS = [KIT_DIR / "setup_wizard.py", PLUGIN_BIN / "claude-token-setup"]
 DIET_SCRIPTS = [KIT_DIR / "claude_token_diet.py", PLUGIN_BIN / "claude-token-diet"]
 READ_GUARD_SCRIPTS = [KIT_DIR / "guard_large_read.py", PLUGIN_BIN / "claude-token-guard-read"]
 READ_SYMBOL_SCRIPTS = [KIT_DIR / "read_symbol.py", PLUGIN_BIN / "claude-read-symbol"]
+NUDGE_SCRIPTS = [KIT_DIR / "failed_attempt_nudge.py", PLUGIN_BIN / "claude-token-failed-nudge"]
 
 
 def run_hook(script: Path, command: str, cwd: Path = ROOT) -> subprocess.CompletedProcess[str]:
@@ -330,6 +332,51 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     again_data = json.loads(again.stdout)
                     self.assertFalse(again_data["changed"])
                     self.assertEqual(again_data["actions"], [])
+                    # 새 nudge hook 은 기본 OFF 라 PostToolUse 가 추가되지 않아야 한다.
+                    self.assertNotIn("PostToolUse", settings.get("hooks", {}))
+                    self.assertNotIn("claude-token-failed-nudge", json.dumps(settings))
+
+    def test_setup_wizard_enables_failed_attempt_nudge_only_with_opt_in_flag(self):
+        """기본 실행은 nudge 를 추가하지 않고, --failed-attempt-nudge 를 줘야 PostToolUse 에 등록된다."""
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    subprocess.run(
+                        [
+                            sys.executable, str(script),
+                            "--root", str(root),
+                            "--yes", "--no-backup", "--json",
+                            "--failed-attempt-nudge",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    settings = json.loads((root / ".claude" / "settings.json").read_text(encoding="utf-8"))
+                    post = settings["hooks"]["PostToolUse"]
+                    self.assertTrue(any(
+                        entry.get("matcher") == "Bash"
+                        and any("claude-token-failed-nudge" in (h.get("command") or "")
+                                or "failed_attempt_nudge.py" in (h.get("command") or "")
+                                for h in entry.get("hooks", []))
+                        for entry in post
+                    ), f"PostToolUse 에 nudge hook 이 추가되어야 한다 (got {post})")
+
+                    # 같은 옵션으로 재실행해도 중복 추가되지 않아야 한다.
+                    again = subprocess.run(
+                        [
+                            sys.executable, str(script),
+                            "--root", str(root),
+                            "--yes", "--no-backup", "--json",
+                            "--failed-attempt-nudge",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    again_data = json.loads(again.stdout)
+                    self.assertFalse(again_data["changed"])
 
     def test_setup_wizard_merges_existing_hooks_and_writes_private_aux_config(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1010,6 +1057,186 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 # 어떤 wrapper 라도 거치면 OK — bypass 만 회귀
                 self.assertIn("hookSpecificOutput", out, f"{command} 는 wrap 대상인데 noop 처리됨")
                 self.assertIn("updatedInput", out["hookSpecificOutput"])
+
+    def test_failed_attempt_nudge_emits_only_after_two_consecutive_failures(self):
+        """동일 fingerprint Bash 명령이 두 번 연속 실패하면 nudge, 그 전에는 noop."""
+        for script in NUDGE_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    cwd = Path(tmp)
+                    payload = {
+                        "session_id": "sess-a",
+                        "tool_name": "Bash",
+                        "tool_input": {"command": "pytest tests/auth.py"},
+                        "tool_response": {"exitCode": 1},
+                    }
+                    proc1 = run_hook_payload(script, payload, cwd=cwd)
+                    self.assertEqual(json.loads(proc1.stdout), {})
+                    payload2 = dict(payload)
+                    payload2["tool_input"] = {"command": "pytest tests/auth.py -v"}
+                    proc2 = run_hook_payload(script, payload2, cwd=cwd)
+                    data = json.loads(proc2.stdout)
+                    self.assertIn("hookSpecificOutput", data)
+                    hook_out = data["hookSpecificOutput"]
+                    self.assertEqual(hook_out["hookEventName"], "PostToolUse")
+                    self.assertIn("/clear", hook_out["additionalContext"])
+                    state_files = list((cwd / ".claude-token-optimizer").glob("failures-*.json"))
+                    self.assertEqual(len(state_files), 1)
+                    mode = state_files[0].stat().st_mode & 0o777
+                    self.assertEqual(mode, 0o600)
+
+    def test_failed_attempt_nudge_resets_when_pivoting_to_different_command(self):
+        for script in NUDGE_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    cwd = Path(tmp)
+                    fail_a = {
+                        "session_id": "sess-b",
+                        "tool_name": "Bash",
+                        "tool_input": {"command": "pytest tests/auth.py"},
+                        "tool_response": {"exitCode": 1},
+                    }
+                    fail_b = dict(fail_a)
+                    fail_b["tool_input"] = {"command": "pytest tests/billing.py"}
+                    proc_a = run_hook_payload(script, fail_a, cwd=cwd)
+                    proc_b = run_hook_payload(script, fail_b, cwd=cwd)
+                    self.assertEqual(json.loads(proc_a.stdout), {})
+                    # 다른 fingerprint 라 consecutive 카운트가 1로 리셋됨 → noop
+                    self.assertEqual(json.loads(proc_b.stdout), {})
+
+    def test_failed_attempt_nudge_skips_success_and_non_bash_tools(self):
+        """success Bash 호출과 non-Bash tool 모두 nudge 가 발화하지 않아야 한다.
+
+        non-Bash 호출은 상태 파일도 만들지 않는다. success Bash 호출은 fingerprint streak 을
+        끊기 위한 ok marker 를 기록하므로 상태 파일은 만들어진다 (의도된 동작).
+        """
+        for script in NUDGE_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    cwd = Path(tmp)
+                    non_bash = {
+                        "session_id": "sess-c-readonly",
+                        "tool_name": "Read",
+                        "tool_input": {"file_path": "foo.py"},
+                        "tool_response": {"exitCode": 1},
+                    }
+                    self.assertEqual(json.loads(run_hook_payload(script, non_bash, cwd=cwd).stdout), {})
+                    self.assertFalse((cwd / ".claude-token-optimizer").exists(),
+                                     "non-Bash 호출은 상태 파일을 만들지 않아야 한다")
+
+                    success = {
+                        "session_id": "sess-c-success",
+                        "tool_name": "Bash",
+                        "tool_input": {"command": "pytest tests/auth.py"},
+                        "tool_response": {"exitCode": 0},
+                    }
+                    self.assertEqual(json.loads(run_hook_payload(script, success, cwd=cwd).stdout), {})
+                    state_files = list((cwd / ".claude-token-optimizer").glob("failures-*.json"))
+                    self.assertEqual(len(state_files), 1,
+                                     "success 호출은 ok marker 를 위해 상태 파일을 만든다")
+                    entries = json.loads(state_files[0].read_text(encoding="utf-8"))
+                    self.assertTrue(entries and entries[-1].get("ok") is True,
+                                    "success 호출은 ok marker 로 streak 을 끊어야 한다")
+
+    def test_failed_attempt_nudge_handles_malformed_payload(self):
+        """malformed JSON / 누락 필드에서도 hook 이 죽지 않고 noop 응답해야 한다."""
+        for script in NUDGE_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [sys.executable, str(script)],
+                    input="{not json",
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertEqual(json.loads(proc.stdout), {})
+
+    def test_failed_attempt_nudge_does_not_fire_after_intervening_success(self):
+        """fail A → success A → fail A 패턴은 nudge 가 발화하면 안 된다 (false-positive 방지)."""
+        for script in NUDGE_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    cwd = Path(tmp)
+                    seq = [("pytest tests/auth.py", 1), ("pytest tests/auth.py", 0), ("pytest tests/auth.py", 1)]
+                    outputs = []
+                    for cmd, exit_code in seq:
+                        payload = {
+                            "session_id": "sess-reset",
+                            "tool_name": "Bash",
+                            "tool_input": {"command": cmd},
+                            "tool_response": {"exitCode": exit_code},
+                        }
+                        proc = run_hook_payload(script, payload, cwd=cwd)
+                        outputs.append(json.loads(proc.stdout))
+                    self.assertEqual(outputs, [{}, {}, {}],
+                                     "성공 marker 가 fingerprint streak 을 끊어야 한다")
+
+    def test_failed_attempt_nudge_skips_when_session_id_missing(self):
+        """session_id 가 없으면 cross-session 오염 방지를 위해 noop 하고 상태 파일도 만들지 않는다."""
+        for script in NUDGE_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    cwd = Path(tmp)
+                    payload_no_session = {
+                        "tool_name": "Bash",
+                        "tool_input": {"command": "pytest tests/auth.py"},
+                        "tool_response": {"exitCode": 1},
+                    }
+                    proc1 = run_hook_payload(script, payload_no_session, cwd=cwd)
+                    proc2 = run_hook_payload(script, payload_no_session, cwd=cwd)
+                    self.assertEqual(json.loads(proc1.stdout), {})
+                    self.assertEqual(json.loads(proc2.stdout), {})
+                    self.assertFalse((cwd / ".claude-token-optimizer").exists(),
+                                     "session_id 가 없으면 상태 파일을 만들지 않아야 한다")
+
+                    # 빈 문자열 session_id 도 동일하게 거부.
+                    proc3 = run_hook_payload(script, {**payload_no_session, "session_id": ""}, cwd=cwd)
+                    self.assertEqual(json.loads(proc3.stdout), {})
+                    self.assertFalse((cwd / ".claude-token-optimizer").exists())
+
+    def test_failed_attempt_nudge_rejects_symlinked_state_file(self):
+        """state file 이 심볼릭 링크로 미리 만들어져 있어도 그 link 를 따라 쓰지 않는다."""
+        for script in NUDGE_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    cwd = Path(tmp)
+                    state_dir = cwd / ".claude-token-optimizer"
+                    state_dir.mkdir()
+                    target = cwd / "victim.txt"
+                    target.write_text("important", encoding="utf-8")
+                    # 공격자가 심어둔 symlink: state file 이 victim 파일을 가리킨다.
+                    link = state_dir / "failures-sess-symlink.json"
+                    link.symlink_to(target)
+                    payload = {
+                        "session_id": "sess-symlink",
+                        "tool_name": "Bash",
+                        "tool_input": {"command": "pytest tests/x.py"},
+                        "tool_response": {"exitCode": 1},
+                    }
+                    proc = run_hook_payload(script, payload, cwd=cwd)
+                    self.assertEqual(json.loads(proc.stdout), {})
+                    # victim 파일 내용이 그대로 보존되어야 한다.
+                    self.assertEqual(target.read_text(encoding="utf-8"), "important",
+                                     "심볼릭 링크 타깃이 덮어써지면 안 된다")
+
+    def test_failed_attempt_nudge_state_file_uses_atomic_write(self):
+        """save_entries 가 tempfile + os.replace 로 atomic 교체하므로 부분 쓰기로 손상되지 않는다."""
+        for script in NUDGE_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    cwd = Path(tmp)
+                    payload = {
+                        "session_id": "sess-atomic",
+                        "tool_name": "Bash",
+                        "tool_input": {"command": "pytest tests/auth.py"},
+                        "tool_response": {"exitCode": 1},
+                    }
+                    run_hook_payload(script, payload, cwd=cwd)
+                    state_files = list((cwd / ".claude-token-optimizer").glob("failures-*.json"))
+                    self.assertEqual(len(state_files), 1, "정확히 1개의 state file 만 남아야 한다")
+                    # tmp staging 파일이 남아 있지 않아야 한다.
+                    leftover = list((cwd / ".claude-token-optimizer").glob(".nudge-*.tmp"))
+                    self.assertEqual(leftover, [])
 
     def test_large_read_guard_blocks_large_whole_file_reads(self):
         for script in READ_GUARD_SCRIPTS:
