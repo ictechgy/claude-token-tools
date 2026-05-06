@@ -1,3 +1,4 @@
+import csv
 import importlib.util
 import json
 import os
@@ -18,6 +19,7 @@ PLUGIN_REWRITE = PLUGIN_BIN / "claude-token-rewrite-bash"
 AUX_SCRIPTS = [KIT_DIR / "aux_ai_delegate.py", PLUGIN_BIN / "claude-token-delegate"]
 IMPLEMENTATION_PAIRS = [
     (KIT_DIR / "aux_ai_delegate.py", PLUGIN_BIN / "claude-token-delegate"),
+    (KIT_DIR / "benchmark_runner.py", PLUGIN_BIN / "claude-token-bench"),
     (KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "claude-token-audit"),
     (KIT_DIR / "claude_token_diet.py", PLUGIN_BIN / "claude-token-diet"),
     (KIT_DIR / "failed_attempt_nudge.py", PLUGIN_BIN / "claude-token-failed-nudge"),
@@ -3045,6 +3047,183 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertTrue((PLUGIN_BIN / hook_cmd).exists())
         self.assertTrue(os.access(PLUGIN_BIN / status_cmd, os.X_OK))
         self.assertTrue(os.access(PLUGIN_BIN / hook_cmd, os.X_OK))
+
+
+BENCH_SCRIPTS = [KIT_DIR / "benchmark_runner.py", PLUGIN_BIN / "claude-token-bench"]
+
+
+def _make_fake_claude(tmpdir: Path, usage: dict | None = None, exit_code: int = 0,
+                     stdout: str | None = None) -> Path:
+    """token usage 가 들어있는 JSON 을 print 하는 가짜 `claude` 바이너리를 만든다."""
+    fake = tmpdir / "fake-claude"
+    if stdout is None:
+        payload = {"message": {"usage": usage or {}}, "total_cost_usd": 0.0123}
+        stdout = json.dumps(payload)
+    script_lines = [
+        "#!/usr/bin/env python3",
+        "import sys",
+        f"sys.stdout.write({stdout!r})",
+        f"sys.exit({exit_code})",
+    ]
+    fake.write_text("\n".join(script_lines), encoding="utf-8")
+    fake.chmod(0o755)
+    return fake
+
+
+class BenchmarkRunnerTests(unittest.TestCase):
+    """benchmark runner 의 fixture parsing, CSV append, fake claude 호출 시나리오 검증."""
+
+    def test_dry_run_appends_csv_row_per_target_without_invoking_claude(self):
+        for script in BENCH_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "tasks.json").write_text(json.dumps([
+                        {"id": "t01", "prompt": "echo hello", "model": "sonnet",
+                         "effort": "medium", "max_turns": 1}
+                    ]))
+                    (root / "variants.json").write_text(json.dumps([
+                        {"name": "baseline", "extra_args": []},
+                        {"name": "hygiene", "extra_args": ["--strict-mcp-config"]},
+                    ]))
+                    csv_path = root / "results.csv"
+                    proc = subprocess.run(
+                        [sys.executable, str(script), "--tasks", str(root / "tasks.json"),
+                         "--variants", str(root / "variants.json"),
+                         "--csv", str(csv_path), "--dry-run"],
+                        text=True, capture_output=True, check=True,
+                    )
+                    self.assertIn("dry-run:", proc.stdout)
+                    rows = list(csv.DictReader(csv_path.open(encoding="utf-8")))
+                    self.assertEqual([(r["task_id"], r["variant"]) for r in rows],
+                                     [("t01", "baseline"), ("t01", "hygiene")])
+                    for row in rows:
+                        self.assertEqual(row["claude_version"], "dry-run")
+                        self.assertEqual(row["success"], "true")
+                        self.assertIn("--strict-mcp-config" if row["variant"] == "hygiene" else "claude -p", row["notes"])
+
+    def test_run_with_fake_claude_collects_usage_and_runs_success_command(self):
+        for script in BENCH_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    fake = _make_fake_claude(root, usage={
+                        "input_tokens": 100,
+                        "output_tokens": 30,
+                        "cache_read_input_tokens": 800,
+                        "cache_creation_input_tokens": 50,
+                    })
+                    (root / "tasks.json").write_text(json.dumps([
+                        {"id": "t01", "prompt": "echo hi", "model": "sonnet",
+                         "effort": "medium", "max_turns": 1,
+                         "success_command": "true", "success_cwd": "."}
+                    ]))
+                    (root / "variants.json").write_text(json.dumps([
+                        {"name": "baseline", "extra_args": []},
+                    ]))
+                    csv_path = root / "results.csv"
+                    proc = subprocess.run(
+                        [sys.executable, str(script),
+                         "--tasks", str(root / "tasks.json"),
+                         "--variants", str(root / "variants.json"),
+                         "--csv", str(csv_path),
+                         "--claude-bin", str(fake),
+                         "--project-root", str(root)],
+                        text=True, capture_output=True, check=True,
+                    )
+                    self.assertIn("ok tokens=980", proc.stdout)  # 100+30+800+50
+                    rows = list(csv.DictReader(csv_path.open(encoding="utf-8")))
+                    self.assertEqual(len(rows), 1)
+                    row = rows[0]
+                    self.assertEqual(row["input_tokens"], "100")
+                    self.assertEqual(row["output_tokens"], "30")
+                    self.assertEqual(row["cache_read"], "800")
+                    self.assertEqual(row["cache_creation"], "50")
+                    self.assertEqual(row["total_tokens"], "980")
+                    self.assertEqual(row["success"], "true")
+                    self.assertAlmostEqual(float(row["cost_usd"]), 0.0123, places=4)
+
+    def test_run_records_failure_when_success_command_exits_nonzero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake = _make_fake_claude(root, usage={"input_tokens": 5, "output_tokens": 5})
+            (root / "tasks.json").write_text(json.dumps([
+                {"id": "t01", "prompt": "x", "model": "sonnet", "max_turns": 1,
+                 "success_command": "false", "success_cwd": "."}
+            ]))
+            (root / "variants.json").write_text(json.dumps([
+                {"name": "baseline", "extra_args": []}
+            ]))
+            csv_path = root / "results.csv"
+            subprocess.run(
+                [sys.executable, str(KIT_DIR / "benchmark_runner.py"),
+                 "--tasks", str(root / "tasks.json"),
+                 "--variants", str(root / "variants.json"),
+                 "--csv", str(csv_path),
+                 "--claude-bin", str(fake),
+                 "--project-root", str(root)],
+                text=True, capture_output=True, check=True,
+            )
+            row = next(csv.DictReader(csv_path.open(encoding="utf-8")))
+            self.assertEqual(row["success"], "false")
+            self.assertIn("exit=1", row["notes"])
+
+    def test_resume_skips_already_recorded_combinations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "tasks.json").write_text(json.dumps([
+                {"id": "t01", "prompt": "x", "max_turns": 1},
+                {"id": "t02", "prompt": "y", "max_turns": 1},
+            ]))
+            (root / "variants.json").write_text(json.dumps([
+                {"name": "baseline", "extra_args": []},
+            ]))
+            csv_path = root / "results.csv"
+            common = [
+                sys.executable, str(KIT_DIR / "benchmark_runner.py"),
+                "--tasks", str(root / "tasks.json"),
+                "--variants", str(root / "variants.json"),
+                "--csv", str(csv_path),
+                "--dry-run",
+            ]
+            subprocess.run(common + ["--task-id", "t01"], check=True)
+            second = subprocess.run(common + ["--resume"], text=True, capture_output=True, check=True)
+            self.assertIn("skip t01/baseline", second.stdout)
+            self.assertIn("run t02/baseline", second.stdout)
+            rows = list(csv.DictReader(csv_path.open(encoding="utf-8")))
+            self.assertEqual(sorted((r["task_id"], r["variant"]) for r in rows),
+                             [("t01", "baseline"), ("t02", "baseline")])
+
+    def test_runner_refuses_shell_metacharacter_in_success_command(self):
+        """fixture 의 success_command 가 shell injection surface 가 되지 않는다.
+
+        실제 runner 는 shlex.split + shell=False 로 실행하므로 `;`, `&&`, `|` 같은 메타문자는
+        리터럴 토큰으로 분리되어 실행 단계에서 자연스럽게 실패한다 (success=false).
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake = _make_fake_claude(root, usage={"input_tokens": 1})
+            sentinel = root / "owned.txt"
+            sentinel.write_text("safe", encoding="utf-8")
+            (root / "tasks.json").write_text(json.dumps([
+                {"id": "t01", "prompt": "x", "max_turns": 1,
+                 "success_command": f"true; echo pwned > {sentinel}", "success_cwd": "."}
+            ]))
+            (root / "variants.json").write_text(json.dumps([
+                {"name": "baseline", "extra_args": []}
+            ]))
+            csv_path = root / "results.csv"
+            subprocess.run(
+                [sys.executable, str(KIT_DIR / "benchmark_runner.py"),
+                 "--tasks", str(root / "tasks.json"),
+                 "--variants", str(root / "variants.json"),
+                 "--csv", str(csv_path),
+                 "--claude-bin", str(fake),
+                 "--project-root", str(root)],
+                text=True, capture_output=True, check=True,
+            )
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "safe",
+                             "shell metacharacter 가 fixture 에 들어와도 실행되면 안 된다")
 
 
 if __name__ == "__main__":

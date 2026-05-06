@@ -95,6 +95,8 @@ JSON 출력은 `cache_metrics` 블록(`cache_hit_rate`, `cache_amortization`, `c
 
 `claude-token-failed-nudge`는 같은 Bash 명령이 같은 세션에서 연속 두 번 실패하면 `/clear` (또는 `/compact focus on …`)을 권유하는 선택적 `PostToolUse` hook 입니다. 실패 시도가 누적되면 대화 컨텍스트가 오염되고 prompt cache 가 매 retry 마다 재워밍되어 토큰 비용이 급증합니다. 본 hook 은 두 번째 실패 시 짧은 추가 컨텍스트만 주입해 방향 전환을 유도합니다 (실행은 막지 않습니다). 기본 OFF이며 `claude-token-setup --failed-attempt-nudge` (또는 대화형 마법사의 "yes")로 명시적으로 켤 때만 활성화됩니다. 상태는 프로젝트 로컬 `.claude-token-optimizer/failures-<session>.json` (파일 모드 `0o600`)에 저장됩니다.
 
+`claude-token-bench`는 `research/benchmark-plan.md` 실행을 자동화합니다. JSON fixture에서 task와 variant 정의를 읽어 각 조합에 대해 `claude -p --output-format json`을 호출하고, fixture 의 `success_command` 를 실행한 뒤 `tokens_per_successful_task` 측정용 CSV에 한 행을 append 합니다. `--dry-run` 은 실제 호출 없이 어떤 명령이 실행될지만 보여주고, `--resume` 은 CSV 에 이미 적재된 `(task_id, variant)` 쌍을 건너뜁니다. `success_command` 는 `shlex.split + shell=False` 로 실행되므로 fixture JSON 자체는 shell-injection 표면이 되지 않습니다 — 파이프·리디렉션이 필요한 검증은 별도 헬퍼 스크립트로 분리하고 그 경로를 `success_command` 로 둡니다.
+
 `claude-token-rewrite-bash`는 예시 settings에서 사용하는 opt-in `PreToolUse` Bash hook입니다. 안전한 단일 test/build/lint 명령과 `find`/`tree` 같은 디렉터리 walk 출력은 `claude-trim-output`으로 감싸 head/tail 트리밍을 적용하고, 안전한 단일 `rg`/`grep`/`git diff` 계열 명령과 production 로그 스트림(`kubectl logs`, `docker logs`, `docker compose logs`, `docker stack logs`)은 `claude-sanitize-output`으로 감싸 secret redact와 트리밍을 함께 적용합니다. 파이프·리디렉션·명령 치환 등 컴파운드 셸 구문은 wrap 대상에서 제외해 단일 안전 argv 명령에만 적용됩니다.
 
 ```bash
