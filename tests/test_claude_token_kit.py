@@ -882,6 +882,40 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertEqual(config["custom_note"], "keep me")
             self.assertEqual(stat.S_IMODE(config_path.stat().st_mode), 0o600)
 
+    def test_setup_wizard_refuses_symlinked_aux_config_before_backup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            root.mkdir()
+            outside = Path(tmp) / "outside-config.json"
+            outside.write_text(json.dumps({"secret": "do-not-copy"}), encoding="utf-8")
+            os.chmod(outside, 0o644)
+            state = root / ".claude-token-optimizer"
+            state.mkdir()
+            config_path = state / "config.json"
+            try:
+                config_path.symlink_to(outside)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(KIT_DIR / "setup_wizard.py"),
+                    "--root",
+                    str(root),
+                    "--yes",
+                    "--aux-provider",
+                    "gemini",
+                    "--json",
+                ],
+                text=True,
+                capture_output=True,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("symlinked auxiliary config", proc.stderr)
+            self.assertEqual(json.loads(outside.read_text(encoding="utf-8")), {"secret": "do-not-copy"})
+            self.assertEqual(list(state.glob("config.json.bak-*")), [])
+
     def test_setup_wizard_resets_untrusted_aux_context_policy(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

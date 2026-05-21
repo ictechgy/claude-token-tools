@@ -459,6 +459,8 @@ def write_aux_config(
         return config_path, None
     if config_path.parent.exists() and config_path.parent.is_symlink():
         raise SystemExit(f"Refusing to use symlinked optimizer state directory: {config_path.parent}")
+    if config_path.is_symlink():
+        raise SystemExit(f"Refusing to write through symlinked auxiliary config: {config_path}")
     write_private_gitignore(config_path.parent)
     if trust_error:
         config: dict[str, Any] = {}
