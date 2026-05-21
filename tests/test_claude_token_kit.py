@@ -3171,6 +3171,41 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertIn("OUTPUT_LIMIT exceeded", proc.stdout)
             self.assertLess(len(proc.stdout), 1000)
 
+    def test_aux_delegate_bounds_output_reads_and_runtime_budgets(self):
+        aux = load_aux_module()
+        self.assertEqual(aux.output_budget(10**12), aux.PROVIDER_OUTPUT_MAX_CHARS)
+        self.assertEqual(aux.output_budget(0), 1)
+        self.assertEqual(aux.output_budget(float("inf")), 4000)
+        self.assertEqual(aux.context_budget(10**12), aux.CONTEXT_MAX_CHARS_LIMIT)
+        self.assertEqual(aux.context_budget(0), 1)
+        self.assertEqual(aux.timeout_budget(10**12), aux.TIMEOUT_SECONDS_MAX)
+        self.assertEqual(aux.timeout_budget(0), 1)
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "provider.out"
+            output.write_bytes(b"A" * 1024)
+            text, truncated = aux.read_limited_output(output, 80)
+        self.assertTrue(truncated)
+        self.assertEqual(len(text), 80)
+
+    def test_aux_delegate_nonfinite_config_budget_does_not_crash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text(
+                '{"aux_ai_enabled": true, "default_provider": "gemini", "max_output_chars": 1e100000}\n',
+                encoding="utf-8",
+            )
+            os.chmod(config_path, stat.S_IRUSR | stat.S_IWUSR)
+            env = os.environ.copy()
+            env["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(config_path)
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "aux_ai_delegate.py"), "ask", "--prompt", "hello", "--dry-run"],
+                text=True,
+                capture_output=True,
+                env=env,
+                check=True,
+            )
+            self.assertIn("prompt_chars=", proc.stdout)
+
     def test_aux_delegate_sanitizes_provider_env_and_escapes_preview_markers(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "config.json"
