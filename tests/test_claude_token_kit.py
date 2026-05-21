@@ -620,6 +620,31 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertIn("SAFE_VALUE=visible", proc.stdout)
                 self.assertNotIn("private-key-secret-line", proc.stdout)
 
+    def test_sanitize_output_detects_multiline_secret_started_inside_private_key_block(self):
+        raw = (
+            "-----BEGIN OPENSSH PRIVATE KEY-----\n"
+            'API_TOKEN="secret-starts-inside-key\n'
+            "-----END OPENSSH PRIVATE KEY-----\n"
+            "secret-after-key\n"
+            'real-close"\n'
+            "SAFE_VALUE=visible\n"
+        )
+        for script in SANITIZE_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [sys.executable, str(script)],
+                    input=raw,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertIn("[REDACTED PRIVATE KEY BLOCK]", proc.stdout)
+                self.assertIn("[REDACTED MULTILINE SECRET]", proc.stdout)
+                self.assertIn("SAFE_VALUE=visible", proc.stdout)
+                self.assertNotIn("secret-starts-inside-key", proc.stdout)
+                self.assertNotIn("secret-after-key", proc.stdout)
+                self.assertNotIn("real-close", proc.stdout)
+
     def test_sanitize_output_redacts_inline_object_secret_literals_without_corrupting_expressions(self):
         raw = (
             '+const cfg = { apiKey: "real-secret", password: "hunter2" };\n'

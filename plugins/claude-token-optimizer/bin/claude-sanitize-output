@@ -256,6 +256,9 @@ class LineSanitizer:
 
         if self.in_private_key_block:
             redacted = True
+            multiline_quote = detect_multiline_secret_assignment(line)
+            if multiline_quote is not None:
+                self.multiline_secret_quote = multiline_quote
             if PRIVATE_KEY_END_RE.search(line):
                 self.in_private_key_block = False
             return self._finish(diff_prefix + "[REDACTED PRIVATE KEY BLOCK]\n", redacted)
