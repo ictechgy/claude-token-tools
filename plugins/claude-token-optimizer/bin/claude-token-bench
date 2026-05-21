@@ -50,6 +50,7 @@ import argparse
 import csv
 import datetime as _dt
 import json
+import math
 import os
 import shlex
 import shutil
@@ -138,8 +139,8 @@ def parse_tasks(path: Path) -> list[TaskFixture]:
                 budget = float(budget_raw)
             except (TypeError, ValueError):
                 raise SystemExit(f"task {item.get('id')} max_budget_usd must be number or null")
-            if budget <= 0:
-                raise SystemExit(f"task {item.get('id')} max_budget_usd must be > 0 (use null for unlimited)")
+            if not math.isfinite(budget) or budget <= 0:
+                raise SystemExit(f"task {item.get('id')} max_budget_usd must be finite and > 0 (use null for unlimited)")
         else:
             budget = None
         fixtures.append(TaskFixture(

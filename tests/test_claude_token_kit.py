@@ -3942,7 +3942,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
 
     def test_runner_validates_max_budget_usd_value(self):
         """max_budget_usd 가 0 이하이거나 숫자가 아니면 즉시 SystemExit 으로 거부한다."""
-        for bad in [0, -1, "abc"]:
+        for bad in [0, -1, "abc", "nan", "inf", "-inf", "1e100000"]:
             with self.subTest(max_budget_usd=bad):
                 with tempfile.TemporaryDirectory() as tmp:
                     root = Path(tmp)
