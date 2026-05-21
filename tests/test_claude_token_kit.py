@@ -102,6 +102,15 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertEqual(kit.read_bytes(), plugin.read_bytes())
                 self.assertTrue(os.access(plugin, os.X_OK), f"{plugin} must be executable")
 
+    def test_prepublish_check_package_invariants(self):
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "prepublish_check.py"), "--skip-tests"],
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        self.assertIn("prepublish check: OK", proc.stdout)
+
     def test_trim_preserves_exit_code_and_trims(self):
         cmd = [
             sys.executable,
