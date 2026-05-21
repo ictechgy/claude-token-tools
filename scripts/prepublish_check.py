@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 import py_compile
+import re
 import shutil
 import stat
 import subprocess
@@ -21,9 +22,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 KIT_DIR = ROOT / "claude-token-kit"
 PLUGIN_DIR = ROOT / "plugins" / "claude-token-optimizer"
-PLUGIN_BIN = PLUGIN_DIR / "bin"
+PLUGIN_BIN = Path(os.environ.get("CLAUDE_TOKEN_PREPUBLISH_PLUGIN_BIN", PLUGIN_DIR / "bin"))
 PLUGIN_MANIFEST = PLUGIN_DIR / ".claude-plugin" / "plugin.json"
 MARKETPLACE_MANIFEST = ROOT / ".claude-plugin" / "marketplace.json"
+SKILLS_DIR = Path(os.environ.get("CLAUDE_TOKEN_PREPUBLISH_SKILLS_DIR", PLUGIN_DIR / "skills"))
+BASH_ALLOWED_TOOL_RE = re.compile(r"Bash\(([^\s)]+)")
+PLUGIN_HELPER_COMMAND_RE = re.compile(r"^(?:claude-token-|claude-(?:read-symbol|trim-output|sanitize-output)$)")
 
 IMPLEMENTATION_PAIRS = (
     ("aux_ai_delegate.py", "claude-token-delegate"),
@@ -90,6 +94,17 @@ def load_json(path: Path) -> dict:
     return data
 
 
+def skill_frontmatter(text: str) -> str:
+    """Return the YAML-ish skill metadata block without inspecting body examples."""
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return ""
+    for index, line in enumerate(lines[1:], start=1):
+        if line.strip() == "---":
+            return "\n".join(lines[1:index])
+    return ""
+
+
 def check_manifest() -> None:
     plugin = load_json(PLUGIN_MANIFEST)
     marketplace = load_json(MARKETPLACE_MANIFEST)
@@ -116,7 +131,31 @@ def check_manifest() -> None:
         fail(f"marketplace/plugin license mismatch: {entry.get('license')} != {plugin['license']}")
 
 
+def check_skill_allowed_tool_commands() -> None:
+    if not SKILLS_DIR.is_dir():
+        fail(f"missing plugin skills directory: {SKILLS_DIR}")
+    if not PLUGIN_BIN.is_dir():
+        fail(f"missing plugin bin directory: {PLUGIN_BIN}")
+    available = {path.name for path in PLUGIN_BIN.iterdir() if path.is_file()}
+    for skill in sorted(SKILLS_DIR.glob("*/SKILL.md")):
+        try:
+            text = skill.read_text(encoding="utf-8")
+        except OSError as exc:
+            fail(f"could not read skill metadata: {skill}: {exc}")
+        for command in BASH_ALLOWED_TOOL_RE.findall(skill_frontmatter(text)):
+            if not PLUGIN_HELPER_COMMAND_RE.match(command):
+                continue
+            if command not in available:
+                try:
+                    rel = skill.relative_to(PLUGIN_DIR)
+                except ValueError:
+                    rel = skill
+                fail(f"skill allowed-tools references missing plugin bin command: {rel}: {command}")
+
+
 def check_bin_copies() -> None:
+    if not PLUGIN_BIN.is_dir():
+        fail(f"missing plugin bin directory: {PLUGIN_BIN}")
     for kit_name, bin_name in IMPLEMENTATION_PAIRS:
         kit = KIT_DIR / kit_name
         plugin_bin = PLUGIN_BIN / bin_name
@@ -182,6 +221,7 @@ def main() -> int:
 
     check_manifest()
     check_bin_copies()
+    check_skill_allowed_tool_commands()
     remove_generated_plugin_bin_python_caches()
     check_package_clean()
     check_python_compiles()

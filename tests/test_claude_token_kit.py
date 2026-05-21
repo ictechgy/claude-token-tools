@@ -123,6 +123,91 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertFalse(plugin_bin_cache.exists())
         self.assertFalse(stale_pyc.exists())
 
+    def test_prepublish_rejects_missing_skill_allowed_tool_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            skills_copy = Path(tmp) / "skills"
+            shutil.copytree(ROOT / "plugins" / "claude-token-optimizer" / "skills", skills_copy)
+            skill = skills_copy / "setup" / "SKILL.md"
+            original = skill.read_text(encoding="utf-8")
+            skill.write_text(
+                original.replace("Bash(claude-token-setup *)", "Bash(claude-token-missing *)"),
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env["CLAUDE_TOKEN_PREPUBLISH_SKILLS_DIR"] = str(skills_copy)
+            proc = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "prepublish_check.py"), "--skip-tests"],
+                text=True,
+                capture_output=True,
+                env=env,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("skill allowed-tools references missing plugin bin command", proc.stdout + proc.stderr)
+            self.assertIn("claude-token-missing", proc.stdout + proc.stderr)
+
+    def test_prepublish_rejects_multiline_missing_skill_allowed_tool_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            skills_dir = Path(tmp) / "skills" / "multiline"
+            skills_dir.mkdir(parents=True)
+            (skills_dir / "SKILL.md").write_text(
+                "\n".join(
+                    [
+                        "---",
+                        "description: test",
+                        "allowed-tools:",
+                        "  - Bash(git *)",
+                        "  - Bash(claude-token-missing *)",
+                        "---",
+                        "",
+                        "# Body",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env["CLAUDE_TOKEN_PREPUBLISH_SKILLS_DIR"] = str(Path(tmp) / "skills")
+            proc = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "prepublish_check.py"), "--skip-tests"],
+                text=True,
+                capture_output=True,
+                env=env,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("skill allowed-tools references missing plugin bin command", proc.stdout + proc.stderr)
+            self.assertIn("claude-token-missing", proc.stdout + proc.stderr)
+
+    def test_prepublish_ignores_system_allowed_tool_commands(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            skills_dir = Path(tmp) / "skills" / "system"
+            skills_dir.mkdir(parents=True)
+            (skills_dir / "SKILL.md").write_text(
+                "---\ndescription: test\nallowed-tools: Bash(git *), Bash(cat *)\n---\n",
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env["CLAUDE_TOKEN_PREPUBLISH_SKILLS_DIR"] = str(Path(tmp) / "skills")
+            proc = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "prepublish_check.py"), "--skip-tests"],
+                text=True,
+                capture_output=True,
+                env=env,
+                check=True,
+            )
+            self.assertIn("prepublish check: OK", proc.stdout)
+
+    def test_prepublish_reports_missing_plugin_bin_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["CLAUDE_TOKEN_PREPUBLISH_PLUGIN_BIN"] = str(Path(tmp) / "missing-bin")
+            proc = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "prepublish_check.py"), "--skip-tests"],
+                text=True,
+                capture_output=True,
+                env=env,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("missing plugin bin directory", proc.stdout + proc.stderr)
+
     def test_prepublish_rejects_package_symlinks(self):
         link = PLUGIN_DIR / "symlink-artifact"
         try:
