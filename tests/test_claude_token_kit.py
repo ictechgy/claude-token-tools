@@ -2369,6 +2369,23 @@ class ClaudeTokenKitTests(unittest.TestCase):
             rule_ids = {item["rule_id"] for item in json.loads(proc.stdout)["findings"]}
             self.assertIn("context-not-regular", rule_ids)
 
+    def test_token_diet_context_reads_do_not_follow_symlinks_after_discovery(self):
+        diet = load_module_from_path(KIT_DIR / "claude_token_diet.py", "claude_token_diet_symlink_test")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outside = root / "outside.md"
+            outside.write_text("token=ghp_" + ("A" * 36), encoding="utf-8")
+            link = root / "CLAUDE.md"
+            link.symlink_to(outside)
+            original_iter = diet.iter_context_files
+            try:
+                diet.iter_context_files = lambda _root: [link]
+                context_files, findings = diet.scan_context(root, 1, 2, 1)
+            finally:
+                diet.iter_context_files = original_iter
+            self.assertEqual(context_files, [])
+            self.assertIn("context-not-regular", {item.rule_id for item in findings})
+
     def test_token_diet_scan_reports_invalid_settings(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
