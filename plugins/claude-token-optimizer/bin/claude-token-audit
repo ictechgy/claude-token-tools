@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shlex
+import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,6 +29,7 @@ COST_KEYS = ("total_cost_usd", "cost_usd", "costUSD")
 MODEL_KEYS = ("model", "model_id", "modelId")
 QUERY_SOURCE_KEYS = ("query_source", "querySource")
 MAX_ERROR_EXAMPLES = 20
+JSON_PARSE_RECURSION_LIMIT = 10_000
 SECRET_VALUE_RE = re.compile(
     r"(?i)(gh[pousr]_[A-Za-z0-9_]{8,}|xox[abprs]-[A-Za-z0-9-]{8,}|AKIA[0-9A-Z]{8,}|"
     r"AIza[0-9A-Za-z_\-]{8,}|Bearer\s+[A-Za-z0-9._~+/=-]+|"
@@ -286,6 +288,16 @@ def add_usage(
     return record
 
 
+def parse_json_line(line: str) -> Any:
+    # Python 3.11's json decoder can hit the interpreter recursion limit on
+    # deeply nested transcript payloads before our iterative walker sees them.
+    # Raise the process limit enough for realistic hostile fixtures, while still
+    # treating too-deep input as a skipped parse record instead of crashing.
+    if sys.getrecursionlimit() < JSON_PARSE_RECURSION_LIMIT:
+        sys.setrecursionlimit(JSON_PARSE_RECURSION_LIMIT)
+    return json.loads(line)
+
+
 def scan(paths: list[str], show_paths: bool = False, show_commands: bool = False) -> UsageSummary:
     summary = UsageSummary()
     for file in iter_jsonl_files(paths):
@@ -297,10 +309,14 @@ def scan(paths: list[str], show_paths: bool = False, show_commands: bool = False
                     if not line:
                         continue
                     try:
-                        obj = json.loads(line)
+                        obj = parse_json_line(line)
                     except json.JSONDecodeError as exc:
                         summary.skipped_records += 1
                         summary.note_error(f"{path_label(file, show_paths=show_paths)}:{line_no}: JSON parse error: {exc.msg}")
+                        continue
+                    except RecursionError as exc:
+                        summary.skipped_records += 1
+                        summary.note_error(f"{path_label(file, show_paths=show_paths)}:{line_no}: JSON parse error: nested JSON exceeds supported depth")
                         continue
                     summary.records += 1
                     add_usage(summary, obj, file, show_paths=show_paths, show_commands=show_commands)
