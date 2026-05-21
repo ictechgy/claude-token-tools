@@ -53,6 +53,27 @@ def path_label(path: Path, show_paths: bool) -> str:
     return f"{path.name}#path:{digest}"
 
 
+def has_symlink_component(path: Path) -> bool:
+    """Return True when the requested path traverses an explicit symlink.
+
+    macOS exposes common absolute prefixes such as /var and /tmp as root-level
+    system symlinks, so ignore only that first absolute component. Reject later
+    symlink components to block linkdir/file.py style boundary bypasses.
+    """
+    if path.is_symlink():
+        return True
+    current = Path(path.anchor) if path.is_absolute() else Path()
+    depth = 0
+    for part in path.parts:
+        if path.is_absolute() and part == path.anchor:
+            continue
+        current = current / part
+        if current.is_symlink() and not (path.is_absolute() and depth == 0):
+            return True
+        depth += 1
+    return False
+
+
 def read_text_bounded(path: Path) -> tuple[str, bool]:
     with path.open("rb") as handle:
         data = handle.read(MAX_READ_BYTES + 1)
@@ -262,6 +283,9 @@ def main() -> int:
     args = parser.parse_args()
 
     path = Path(args.path).expanduser()
+    if has_symlink_component(path):
+        print(f"claude-read-symbol: refusing symlink path component: {args.path}", file=sys.stderr)
+        return 2
     if not path.is_file():
         print(f"claude-read-symbol: not a file: {args.path}", file=sys.stderr)
         return 2
