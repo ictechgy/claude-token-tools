@@ -182,10 +182,35 @@ def redact_secret_assignments(line: str) -> tuple[str, bool]:
     return line, redacted
 
 
+def detect_multiline_secret_assignment(line: str) -> str | None:
+    """Return the quote delimiter when a secret assignment starts a multiline value."""
+    marker = re.search(
+        rf"(?i)(?:^|[\s{{\[,])(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:export\s+)?"
+        rf"[\"']?(?:{SECRET_KEY})[\"']?\s*[:=]\s*(?P<quote>[\"'])",
+        line,
+    )
+    if marker is None:
+        return None
+    quote = marker.group("quote")
+    value_start = marker.end("quote")
+    escaped = False
+    for char in line[value_start:]:
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if char == quote:
+            return None
+    return quote
+
+
 class LineSanitizer:
     def __init__(self, *, show_paths: bool = False) -> None:
         self.show_paths = show_paths
         self.in_private_key_block = False
+        self.multiline_secret_quote: str | None = None
         self.redactions = 0
 
     def sanitize(self, raw_line: str) -> tuple[str, bool]:
@@ -202,11 +227,22 @@ class LineSanitizer:
                 self.in_private_key_block = False
             return self._finish(diff_prefix + "[REDACTED PRIVATE KEY BLOCK]\n", redacted)
 
+        if self.multiline_secret_quote is not None:
+            redacted = True
+            if self.multiline_secret_quote in line:
+                self.multiline_secret_quote = None
+            return self._finish(diff_prefix + "[REDACTED MULTILINE SECRET]\n", redacted)
+
         if PRIVATE_KEY_BEGIN_RE.search(line):
             redacted = True
             if not PRIVATE_KEY_END_RE.search(line):
                 self.in_private_key_block = True
             return self._finish(diff_prefix + "[REDACTED PRIVATE KEY BLOCK]\n", redacted)
+
+        self.multiline_secret_quote = detect_multiline_secret_assignment(line)
+        if self.multiline_secret_quote is not None:
+            redacted = True
+            return self._finish(diff_prefix + "[REDACTED MULTILINE SECRET]\n", redacted)
 
         new_line, count = AUTH_HEADER_RE.subn(r"\g<prefix>[REDACTED]", line)
         if count:

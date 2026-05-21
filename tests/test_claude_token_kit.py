@@ -484,6 +484,28 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertIn("[REDACTED PRIVATE KEY BLOCK]", proc.stdout)
         self.assertNotIn("b3BlbnNzaC1", proc.stdout)
 
+    def test_sanitize_output_multiline_secret_assignment_is_redacted(self):
+        raw = (
+            'API_TOKEN="first-secret-line\n'
+            "second-secret-line\n"
+            'third-secret-line"\n'
+            "SAFE_VALUE=visible\n"
+        )
+        for script in SANITIZE_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [sys.executable, str(script)],
+                    input=raw,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertIn("[REDACTED MULTILINE SECRET]", proc.stdout)
+                self.assertIn("SAFE_VALUE=visible", proc.stdout)
+                self.assertNotIn("first-secret-line", proc.stdout)
+                self.assertNotIn("second-secret-line", proc.stdout)
+                self.assertNotIn("third-secret-line", proc.stdout)
+
     def test_sanitize_output_redacts_inline_object_secret_literals_without_corrupting_expressions(self):
         raw = (
             '+const cfg = { apiKey: "real-secret", password: "hunter2" };\n'
