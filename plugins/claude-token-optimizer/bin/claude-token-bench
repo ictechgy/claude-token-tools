@@ -52,6 +52,7 @@ import datetime as _dt
 import json
 import math
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -124,6 +125,37 @@ class RunResult:
     corrections: int = 0
 
 
+def parse_positive_int(value: Any, *, field: str, owner: str) -> int:
+    """Parse a JSON fixture field that must be a positive integer."""
+    if isinstance(value, bool):
+        raise SystemExit(f"{owner} {field} must be a positive integer")
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str) and re.fullmatch(r"[0-9]+", value.strip()):
+        parsed = int(value.strip())
+    else:
+        raise SystemExit(f"{owner} {field} must be a positive integer")
+    if parsed <= 0:
+        raise SystemExit(f"{owner} {field} must be > 0")
+    return parsed
+
+
+def parse_string_list(value: Any, *, field: str, owner: str) -> list[str]:
+    """Parse a JSON fixture field that must be a list of non-empty strings."""
+    if value is None:
+        raise SystemExit(f"{owner} {field} must be a JSON list of strings")
+    if not isinstance(value, list):
+        raise SystemExit(f"{owner} {field} must be a JSON list of strings")
+    items: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str):
+            raise SystemExit(f"{owner} {field}[{index}] must be a string")
+        if not item.strip():
+            raise SystemExit(f"{owner} {field}[{index}] must be non-empty")
+        items.append(item)
+    return items
+
+
 def parse_tasks(path: Path) -> list[TaskFixture]:
     raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, list):
@@ -148,9 +180,13 @@ def parse_tasks(path: Path) -> list[TaskFixture]:
             prompt=str(item["prompt"]),
             model=str(item.get("model", "sonnet")),
             effort=str(effort_raw) if effort_raw is not None else None,
-            max_turns=int(item.get("max_turns", 3)),
+            max_turns=parse_positive_int(item.get("max_turns", 3), field="max_turns", owner=f"task {item.get('id')}"),
             max_budget_usd=budget,
-            allowed_tools=list(item.get("allowed_tools", [])),
+            allowed_tools=parse_string_list(
+                item.get("allowed_tools", []),
+                field="allowed_tools",
+                owner=f"task {item.get('id')}",
+            ),
             success_command=item.get("success_command"),
             success_cwd=str(item.get("success_cwd", ".")),
         ))
@@ -167,7 +203,11 @@ def parse_variants(path: Path) -> list[Variant]:
             raise SystemExit(f"variant entry must be a JSON object: {item}")
         variants.append(Variant(
             name=str(item["name"]),
-            extra_args=[str(a) for a in item.get("extra_args", [])],
+            extra_args=parse_string_list(
+                item.get("extra_args", []),
+                field="extra_args",
+                owner=f"variant {item.get('name')}",
+            ),
         ))
     return variants
 

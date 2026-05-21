@@ -4107,6 +4107,88 @@ class BenchmarkRunnerTests(unittest.TestCase):
                                         f"max_budget_usd={bad} 는 거부되어야 한다")
                     self.assertIn("max_budget_usd", proc.stderr)
 
+    def test_runner_validates_max_turns_value(self):
+        """max_turns 는 양의 정수 fixture 필드여야 한다."""
+        for bad in [0, -1, "0", "-1", "1.5", 1.5, "abc", True, None]:
+            with self.subTest(max_turns=bad):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "tasks.json").write_text(json.dumps([
+                        {"id": "t01", "prompt": "x", "max_turns": bad}
+                    ]))
+                    (root / "variants.json").write_text(json.dumps([
+                        {"name": "baseline", "extra_args": []}
+                    ]))
+                    proc = subprocess.run(
+                        [sys.executable, str(KIT_DIR / "benchmark_runner.py"),
+                         "--tasks", str(root / "tasks.json"),
+                         "--variants", str(root / "variants.json"),
+                         "--csv", str(root / "results.csv"),
+                         "--dry-run"],
+                        text=True, capture_output=True,
+                    )
+                    self.assertNotEqual(proc.returncode, 0,
+                                        f"max_turns={bad!r} 는 거부되어야 한다")
+                    self.assertIn("max_turns", proc.stderr)
+
+    def test_runner_validates_allowed_tools_schema(self):
+        """allowed_tools 는 문자열 리스트여야 하며 문자열 한 글자씩 분해되면 안 된다."""
+        cases = [
+            "Bash(cat *)",
+            ["Bash(cat *)", 123],
+            ["Bash(cat *)", ""],
+            None,
+        ]
+        for bad in cases:
+            with self.subTest(allowed_tools=bad):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "tasks.json").write_text(json.dumps([
+                        {"id": "t01", "prompt": "x", "max_turns": 1, "allowed_tools": bad}
+                    ]))
+                    (root / "variants.json").write_text(json.dumps([
+                        {"name": "baseline", "extra_args": []}
+                    ]))
+                    proc = subprocess.run(
+                        [sys.executable, str(KIT_DIR / "benchmark_runner.py"),
+                         "--tasks", str(root / "tasks.json"),
+                         "--variants", str(root / "variants.json"),
+                         "--csv", str(root / "results.csv"),
+                         "--dry-run"],
+                        text=True, capture_output=True,
+                    )
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertIn("allowed_tools", proc.stderr)
+
+    def test_runner_validates_variant_extra_args_schema(self):
+        """extra_args 는 문자열 리스트여야 하며 문자열/숫자 coercion 으로 CLI argv 가 변형되면 안 된다."""
+        cases = [
+            "--strict-mcp-config",
+            ["--strict-mcp-config", 123],
+            ["--strict-mcp-config", ""],
+            None,
+        ]
+        for bad in cases:
+            with self.subTest(extra_args=bad):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "tasks.json").write_text(json.dumps([
+                        {"id": "t01", "prompt": "x", "max_turns": 1}
+                    ]))
+                    (root / "variants.json").write_text(json.dumps([
+                        {"name": "baseline", "extra_args": bad}
+                    ]))
+                    proc = subprocess.run(
+                        [sys.executable, str(KIT_DIR / "benchmark_runner.py"),
+                         "--tasks", str(root / "tasks.json"),
+                         "--variants", str(root / "variants.json"),
+                         "--csv", str(root / "results.csv"),
+                         "--dry-run"],
+                        text=True, capture_output=True,
+                    )
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertIn("extra_args", proc.stderr)
+
     def test_runner_rejects_success_cwd_that_escapes_project_root(self):
         """success_cwd 가 project_root 밖으로 escape 하면 success=false 로 거부한다."""
         with tempfile.TemporaryDirectory() as tmp:
