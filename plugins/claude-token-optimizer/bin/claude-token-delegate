@@ -135,6 +135,8 @@ def truthy_env(name: str) -> bool:
 
 
 def bounded_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+    if isinstance(value, bool):
+        return default
     if isinstance(value, float) and not math.isfinite(value):
         return default
     try:
