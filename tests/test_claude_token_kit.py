@@ -3473,11 +3473,14 @@ class ClaudeTokenKitTests(unittest.TestCase):
         aux = load_aux_module()
         self.assertEqual(aux.output_budget(10**12), aux.PROVIDER_OUTPUT_MAX_CHARS)
         self.assertEqual(aux.output_budget(0), 1)
+        self.assertEqual(aux.output_budget(True), 4000)
         self.assertEqual(aux.output_budget(float("inf")), 4000)
         self.assertEqual(aux.context_budget(10**12), aux.CONTEXT_MAX_CHARS_LIMIT)
         self.assertEqual(aux.context_budget(0), 1)
+        self.assertEqual(aux.context_budget(False), 60000)
         self.assertEqual(aux.timeout_budget(10**12), aux.TIMEOUT_SECONDS_MAX)
         self.assertEqual(aux.timeout_budget(0), 1)
+        self.assertEqual(aux.timeout_budget(True), 180)
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / "provider.out"
             output.write_bytes(b"A" * 1024)
