@@ -59,13 +59,20 @@ FORBIDDEN_PACKAGE_DIRS = {
 }
 
 
-def remove_python_cache_artifacts() -> None:
-    for cache_dir in PLUGIN_DIR.rglob("__pycache__"):
-        if cache_dir.is_dir():
-            shutil.rmtree(cache_dir)
-    for path in PLUGIN_DIR.rglob("*.py[co]"):
-        if path.is_file():
-            path.unlink()
+def remove_generated_plugin_bin_python_caches() -> None:
+    # Tests and reviewer diagnostics may import/compile suffix-less Python bin
+    # entrypoints and leave import bytecode under bin/__pycache__. Keep cleanup
+    # scoped to that generated cache location; unrelated package artifacts still
+    # fail check_package_clean().
+    cache_dir = PLUGIN_BIN / "__pycache__"
+    if cache_dir.is_dir():
+        shutil.rmtree(cache_dir, ignore_errors=True)
+    for suffix in ("*.pyc", "*.pyo"):
+        for path in list(PLUGIN_BIN.glob(suffix)):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def fail(message: str) -> None:
@@ -178,11 +185,12 @@ def main() -> int:
 
     check_manifest()
     check_bin_copies()
-    remove_python_cache_artifacts()
+    remove_generated_plugin_bin_python_caches()
     check_package_clean()
     check_python_compiles()
     if not args.skip_tests:
         run_tests()
+        remove_generated_plugin_bin_python_caches()
         check_package_clean()
     print("prepublish check: OK")
     return 0
