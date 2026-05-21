@@ -161,14 +161,28 @@ def first_string(obj: dict[str, Any], keys: Iterable[str]) -> str | None:
     return None
 
 
+MAX_METRIC_VALUE = 10**18
+
+
+def finite_nonnegative_number(value: Any) -> int | float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return min(max(value, 0), MAX_METRIC_VALUE)
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return None
+        return min(max(value, 0.0), float(MAX_METRIC_VALUE))
+    return None
+
+
 def add_token_groups(local_tokens: Counter[str], d: dict[str, Any]) -> None:
     for bucket, keys in TOKEN_KEY_GROUPS:
         for raw_key in keys:
             val = d.get(raw_key)
-            if isinstance(val, bool):
-                continue
-            if isinstance(val, (int, float)) and math.isfinite(val):
-                local_tokens[bucket] += max(0, int(val))
+            metric = finite_nonnegative_number(val)
+            if metric is not None:
+                local_tokens[bucket] += int(metric)
                 break
 
 
@@ -255,8 +269,9 @@ def add_usage(
                 value = d.get("count")
             attrs = d.get("attributes") or {}
             token_type = attrs.get("type", "unknown") if isinstance(attrs, dict) else "unknown"
-            if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
-                local_tokens[str(token_type)] += max(0, int(value))
+            metric = finite_nonnegative_number(value)
+            if metric is not None:
+                local_tokens[str(token_type)] += int(metric)
 
         if local_tokens:
             summary.tokens.update(local_tokens)
@@ -268,11 +283,11 @@ def add_usage(
 
         for key in COST_KEYS:
             val = d.get(key)
-            if isinstance(val, bool):
-                continue
-            if isinstance(val, (int, float)) and math.isfinite(val) and val >= 0:
-                summary.cost_usd += float(val)
-                record.cost_usd += float(val)
+            metric = finite_nonnegative_number(val)
+            if metric is not None:
+                cost = float(metric)
+                summary.cost_usd += cost
+                record.cost_usd += cost
                 break
     commands, tools = collect_record_hints(root, show_commands=show_commands)
     record.commands = commands
