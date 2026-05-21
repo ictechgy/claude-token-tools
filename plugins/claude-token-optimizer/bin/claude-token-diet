@@ -82,7 +82,7 @@ SECRET_CONTENT_RE = re.compile(
     r"gh[pousr]_[A-Za-z0-9_]{20,}|"
     r"xox[abprs]-[A-Za-z0-9-]{10,}|"
     r"AIza[0-9A-Za-z_\-]{20,}|"
-    r"Authorization\s*:\s*(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+|"
+    r"(?i:Authorization)\s*:\s*(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+|"
     r"(?<![A-Za-z0-9])(?:api[_-]?key|token|secret|password|client[_-]?secret)\s*[:=]\s*[^\s]+"
     r")"
 )

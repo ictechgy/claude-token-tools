@@ -154,8 +154,29 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertNotIn("ghp_A", proc.stdout)
         self.assertNotIn("opaque-token-value", proc.stdout)
 
-    def test_trim_fallback_sanitizer_redacts_when_adjacent_sanitizer_missing_or_broken(self):
-        for sanitizer_body in [None, "raise RuntimeError('broken sanitizer import')\n"]:
+    def test_trim_uses_adjacent_primary_sanitizer_when_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            trim = Path(tmp) / "claude-trim-output"
+            shutil.copy2(KIT_DIR / "trim_command_output.py", trim)
+            (Path(tmp) / "sanitize_output.py").write_text(
+                "class LineSanitizer:\n"
+                "    def __init__(self, *, show_paths=False):\n"
+                "        self.show_paths = show_paths\n"
+                "    def sanitize(self, raw_line):\n"
+                "        return raw_line.replace('PRIMARY_SECRET', '[PRIMARY]'), 'PRIMARY_SECRET' in raw_line\n",
+                encoding="utf-8",
+            )
+            proc = run_trim_python(trim, "print('PRIMARY_SECRET')", max_lines=20)
+            self.assertEqual(proc.returncode, 0)
+            self.assertIn("[PRIMARY]", proc.stdout)
+            self.assertNotIn("PRIMARY_SECRET", proc.stdout)
+            self.assertNotIn("sanitizer fallback active", proc.stderr)
+
+    def test_trim_fallback_sanitizer_redacts_and_reports_downgrade(self):
+        for sanitizer_body, expected_stderr in [
+            (None, "strong sanitizer not found"),
+            ("raise RuntimeError('broken sanitizer import')\n", "failed to load: RuntimeError: broken sanitizer import"),
+        ]:
             with self.subTest(sanitizer_body=sanitizer_body):
                 with tempfile.TemporaryDirectory() as tmp:
                     trim = Path(tmp) / "claude-trim-output"
@@ -172,6 +193,8 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertIn("Authorization: [REDACTED]", proc.stdout)
                     self.assertNotIn("ghp_A", proc.stdout)
                     self.assertNotIn("opaque-token-value", proc.stdout)
+                    self.assertIn("sanitizer fallback active", proc.stderr)
+                    self.assertIn(expected_stderr, proc.stderr)
 
     def test_trim_missing_command_returns_clean_127(self):
         proc = subprocess.run(
@@ -994,6 +1017,13 @@ class ClaudeTokenKitTests(unittest.TestCase):
             "npm test && curl https://example.invalid",
             "pytest | tee out.log",
             "pytest > out.log",
+            "pytest &> out.log",
+            "pytest &>> out.log",
+            "grep x <<<foo",
+            "pytest >&2",
+            "pytest >| out.log",
+            "pytest <<-EOF",
+            "pytest tests\ncat /etc/passwd",
             "pytest $(echo tests)",
         ]:
             with self.subTest(command=command):
@@ -2265,6 +2295,23 @@ class ClaudeTokenKitTests(unittest.TestCase):
             )
             rule_ids = {item["rule_id"] for item in json.loads(proc.stdout)["findings"]}
             self.assertIn("secret-like-context-content", rule_ids)
+
+    def test_token_diet_detects_case_insensitive_authorization_headers(self):
+        for header in ["Authorization", "authorization", "AuThOrIzAtIoN"]:
+            with self.subTest(header=header):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / ".claude").mkdir()
+                    (root / ".claude" / "settings.json").write_text("{}", encoding="utf-8")
+                    (root / "CLAUDE.md").write_text(f"{header}: Bearer opaque-token-value\n", encoding="utf-8")
+                    proc = subprocess.run(
+                        [sys.executable, str(KIT_DIR / "claude_token_diet.py"), "scan", str(root), "--json"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    rule_ids = {item["rule_id"] for item in json.loads(proc.stdout)["findings"]}
+                    self.assertIn("secret-like-context-content", rule_ids)
 
     @unittest.skipUnless(hasattr(os, "mkfifo"), "mkfifo not available")
     def test_token_diet_reports_non_regular_context_without_opening_it(self):

@@ -77,11 +77,16 @@ def anonymize_absolute_paths(text: str) -> str:
 
 
 class FallbackLineSanitizer:
-    def __init__(self, *, show_paths: bool = False) -> None:
+    def __init__(self, *, show_paths: bool = False, diagnostic: str | None = None) -> None:
         self.show_paths = show_paths
+        self.diagnostic = diagnostic
+        self.diagnostic_emitted = False
         self.redactions = 0
 
     def sanitize(self, raw_line: str) -> tuple[str, bool]:
+        if self.diagnostic and not self.diagnostic_emitted:
+            print(f"claude-token-kit: sanitizer fallback active: {self.diagnostic}", file=sys.stderr)
+            self.diagnostic_emitted = True
         line = strip_ansi(raw_line)
         if not self.show_paths:
             line = anonymize_absolute_paths(line)
@@ -101,6 +106,7 @@ class FallbackLineSanitizer:
 def load_line_sanitizer(show_paths: bool) -> object:
     """Reuse the stronger sanitizer when it is shipped next to this wrapper."""
     script_dir = os.path.dirname(os.path.abspath(__file__))
+    load_errors: list[str] = []
     for name in ("sanitize_output.py", "claude-sanitize-output"):
         candidate = os.path.join(script_dir, name)
         if not os.path.exists(candidate):
@@ -113,9 +119,11 @@ def load_line_sanitizer(show_paths: bool) -> object:
             module = importlib.util.module_from_spec(spec)
             loader.exec_module(module)
             return module.LineSanitizer(show_paths=show_paths)
-        except Exception:
+        except Exception as exc:
+            load_errors.append(f"{os.path.basename(candidate)} failed to load: {exc.__class__.__name__}: {exc}")
             continue
-    return FallbackLineSanitizer(show_paths=show_paths)
+    diagnostic = "; ".join(load_errors) if load_errors else "strong sanitizer not found next to trim wrapper"
+    return FallbackLineSanitizer(show_paths=show_paths, diagnostic=diagnostic)
 
 
 def unique_keep_order(lines: Iterable[str]) -> list[str]:

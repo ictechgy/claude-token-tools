@@ -17,6 +17,7 @@ import sys
 # patterns such as `rg "token|password"` and `grep "^foo$"` are safe to wrap,
 # but real pipes, redirects, command substitutions, and sequencing are not.
 SHELL_OPERATOR_TOKENS = {";", ";;", ";&", ";;&", "&", "&&", "|", "||", "<", ">", "<<", ">>", "<>", "(", ")"}
+SHELL_OPERATOR_CHARS = frozenset(";&|<>()")
 ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*")
 WRAPPER_BASENAMES = frozenset({
     "trim_command_output.py",
@@ -77,6 +78,8 @@ def find_wrapper(kind: str) -> str | None:
 def split_single_safe_command(command: str) -> list[str] | None:
     if not command.strip():
         return None
+    if any(char in command for char in "\n\r\t"):
+        return None
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
         lexer.whitespace_split = True
@@ -86,7 +89,10 @@ def split_single_safe_command(command: str) -> list[str] | None:
     if not argv:
         return None
     for token in argv:
-        if token in SHELL_OPERATOR_TOKENS:
+        if token in SHELL_OPERATOR_TOKENS or (
+            any(char in SHELL_OPERATOR_CHARS for char in token)
+            and all(char in SHELL_OPERATOR_CHARS for char in token)
+        ):
             return None
         if any(char in token for char in "`\n\r\t"):
             return None
