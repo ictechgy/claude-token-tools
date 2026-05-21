@@ -162,6 +162,34 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertLess(len(proc.stdout), 1200)
         self.assertIn("line trimmed", proc.stdout)
 
+    def test_trim_clamps_extreme_budget_arguments(self):
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(KIT_DIR / "trim_command_output.py"),
+                "--max-lines",
+                "-1",
+                "--max-chars",
+                "1000",
+                "--max-line-chars",
+                "-10",
+                "--tail-lines",
+                "-5",
+                "--runner-summary-items",
+                "1000000000",
+                "--",
+                sys.executable,
+                "-c",
+                "print('A' * 5000)",
+            ],
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        self.assertIn("output trimmed", proc.stdout)
+        self.assertIn("line trimmed", proc.stdout)
+        self.assertLess(len(proc.stdout), 1200)
+
     def test_trim_redacts_secret_bearing_test_output(self):
         proc = run_trim_python(
             KIT_DIR / "trim_command_output.py",
