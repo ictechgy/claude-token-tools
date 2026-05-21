@@ -544,14 +544,23 @@ def file_contains_secret(path: Path, chunk_bytes: int = 64_000) -> bool:
 
 
 def open_regular_no_follow(path: Path):
+    before = os.lstat(path)
+    if not stat.S_ISREG(before.st_mode):
+        raise OSError("not a regular file")
     flags = os.O_RDONLY
     nofollow = getattr(os, "O_NOFOLLOW", 0)
     if nofollow:
         flags |= nofollow
     fd = os.open(path, flags)
     try:
-        st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode):
+        opened = os.fstat(fd)
+        after = os.lstat(path)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or not stat.S_ISREG(after.st_mode)
+            or not os.path.samestat(before, opened)
+            or not os.path.samestat(after, opened)
+        ):
             raise OSError("not a regular file")
         handle = os.fdopen(fd, "rb")
     except Exception:
