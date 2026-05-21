@@ -19,6 +19,29 @@ import sys
 from typing import Iterable
 
 MAX_SUMMARY_ITEM_CHARS = 500
+MAX_LINES_LIMIT = 5_000
+MAX_CHARS_LIMIT = 1_000_000
+MAX_LINE_CHARS_LIMIT = 100_000
+MAX_SECTION_LINES_LIMIT = 2_000
+MAX_RUNNER_SUMMARY_ITEMS_LIMIT = 100
+
+
+def bounded_int(value: object, default: int, minimum: int, maximum: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return min(max(number, minimum), maximum)
+
+
+def normalize_budgets(args: argparse.Namespace) -> None:
+    args.max_lines = bounded_int(args.max_lines, 220, 1, MAX_LINES_LIMIT)
+    args.max_chars = bounded_int(args.max_chars, 20000, 1, MAX_CHARS_LIMIT)
+    args.max_line_chars = bounded_int(args.max_line_chars, 4000, 1, MAX_LINE_CHARS_LIMIT)
+    args.head_lines = bounded_int(args.head_lines, 40, 0, MAX_SECTION_LINES_LIMIT)
+    args.tail_lines = bounded_int(args.tail_lines, 80, 0, MAX_SECTION_LINES_LIMIT)
+    args.error_lines = bounded_int(args.error_lines, 120, 0, MAX_SECTION_LINES_LIMIT)
+    args.runner_summary_items = bounded_int(args.runner_summary_items, 12, 0, MAX_RUNNER_SUMMARY_ITEMS_LIMIT)
 
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 ABSOLUTE_PATH_RE = re.compile(r"(?P<prefix>^|[\s('\"=])(?P<path>/(?:[^\s:(),]+/)*[^\s:(),]+)")
@@ -301,6 +324,7 @@ def main() -> int:
     )
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
+    normalize_budgets(args)
 
     command = args.command
     if command and command[0] == "--":
