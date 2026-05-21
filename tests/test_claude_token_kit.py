@@ -1524,6 +1524,31 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 {},
             )
 
+    def test_large_read_guard_clamps_extreme_env_overrides(self):
+        for script in READ_GUARD_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    big = root / "big.py"
+                    big.write_bytes(b"x" * 1_000_001)
+
+                    env = os.environ.copy()
+                    env["CLAUDE_TOKEN_READ_GUARD_MAX_BYTES"] = "1000000000000"
+                    proc = run_hook_payload(script, {"tool_input": {"file_path": "big.py"}}, cwd=root, env=env)
+                    reason = json.loads(proc.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+                    self.assertIn("1000001 bytes > 1000000 byte guard", reason)
+
+                    env = os.environ.copy()
+                    env["CLAUDE_TOKEN_READ_GUARD_MAX_LINES"] = "1000000000000"
+                    proc = run_hook_payload(
+                        script,
+                        {"tool_name": "Read", "tool_input": {"file_path": "big.py", "offset": 0, "limit": 1000000000}},
+                        cwd=root,
+                        env=env,
+                    )
+                    hook = json.loads(proc.stdout)["hookSpecificOutput"]
+                    self.assertEqual(hook["permissionDecision"], "deny")
+
     def test_large_read_guard_quotes_suggested_shell_commands(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -17,6 +17,8 @@ from typing import Any
 
 DEFAULT_MAX_BYTES = 48_000
 DEFAULT_MAX_LINE_RANGE = 400
+MAX_BYTES_LIMIT = 1_000_000
+MAX_LINE_RANGE_LIMIT = 20_000
 GUARD_ENV = "CLAUDE_TOKEN_READ_GUARD"
 MAX_BYTES_ENV = "CLAUDE_TOKEN_READ_GUARD_MAX_BYTES"
 MAX_LINE_RANGE_ENV = "CLAUDE_TOKEN_READ_GUARD_MAX_LINES"
@@ -26,24 +28,23 @@ def truthy_disabled(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"0", "false", "no", "off", "disabled"}
 
 
-def max_bytes() -> int:
-    raw = os.environ.get(MAX_BYTES_ENV)
+def bounded_env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    raw = os.environ.get(name)
     if not raw:
-        return DEFAULT_MAX_BYTES
+        return default
     try:
-        return max(1, int(raw))
-    except ValueError:
-        return DEFAULT_MAX_BYTES
+        number = int(raw)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return min(max(number, minimum), maximum)
+
+
+def max_bytes() -> int:
+    return bounded_env_int(MAX_BYTES_ENV, DEFAULT_MAX_BYTES, 1, MAX_BYTES_LIMIT)
 
 
 def max_line_range() -> int:
-    raw = os.environ.get(MAX_LINE_RANGE_ENV)
-    if not raw:
-        return DEFAULT_MAX_LINE_RANGE
-    try:
-        return max(1, int(raw))
-    except ValueError:
-        return DEFAULT_MAX_LINE_RANGE
+    return bounded_env_int(MAX_LINE_RANGE_ENV, DEFAULT_MAX_LINE_RANGE, 1, MAX_LINE_RANGE_LIMIT)
 
 
 def tool_input(payload: dict[str, Any]) -> dict[str, Any]:
