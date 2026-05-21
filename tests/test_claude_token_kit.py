@@ -506,6 +506,74 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertNotIn("second-secret-line", proc.stdout)
                 self.assertNotIn("third-secret-line", proc.stdout)
 
+    def test_sanitize_output_multiline_secret_ignores_escaped_continuation_quote(self):
+        raw = (
+            'API_TOKEN="first-secret-line\n'
+            'middle-secret-line \\" still secret\n'
+            "leaked-secret-line\n"
+            'real-close"\n'
+            "SAFE_VALUE=visible\n"
+        )
+        for script in SANITIZE_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [sys.executable, str(script)],
+                    input=raw,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertIn("[REDACTED MULTILINE SECRET]", proc.stdout)
+                self.assertIn("SAFE_VALUE=visible", proc.stdout)
+                self.assertNotIn("middle-secret-line", proc.stdout)
+                self.assertNotIn("leaked-secret-line", proc.stdout)
+                self.assertNotIn("real-close", proc.stdout)
+
+    def test_sanitize_output_detects_later_multiline_secret_on_same_line(self):
+        raw = (
+            'FIRST_TOKEN="closed" SECOND_TOKEN="first-secret-line\n'
+            "leaked-secret-line\n"
+            'real-close"\n'
+        )
+        for script in SANITIZE_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [sys.executable, str(script)],
+                    input=raw,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertIn("[REDACTED MULTILINE SECRET]", proc.stdout)
+                self.assertNotIn("first-secret-line", proc.stdout)
+                self.assertNotIn("leaked-secret-line", proc.stdout)
+                self.assertNotIn("real-close", proc.stdout)
+
+    def test_sanitize_output_multiline_secret_with_private_key_marker_stays_redacted(self):
+        raw = (
+            'API_TOKEN="-----BEGIN OPENSSH PRIVATE KEY-----\n'
+            "private-key-secret-line\n"
+            "-----END OPENSSH PRIVATE KEY-----\n"
+            "still-secret-after-key\n"
+            'real-close"\n'
+            "SAFE_VALUE=visible\n"
+        )
+        for script in SANITIZE_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [sys.executable, str(script)],
+                    input=raw,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertIn("[REDACTED PRIVATE KEY BLOCK]", proc.stdout)
+                self.assertIn("[REDACTED MULTILINE SECRET]", proc.stdout)
+                self.assertIn("SAFE_VALUE=visible", proc.stdout)
+                self.assertNotIn("private-key-secret-line", proc.stdout)
+                self.assertNotIn("still-secret-after-key", proc.stdout)
+                self.assertNotIn("real-close", proc.stdout)
+
     def test_sanitize_output_redacts_inline_object_secret_literals_without_corrupting_expressions(self):
         raw = (
             '+const cfg = { apiKey: "real-secret", password: "hunter2" };\n'
