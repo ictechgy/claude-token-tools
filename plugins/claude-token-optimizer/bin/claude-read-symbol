@@ -262,6 +262,9 @@ def main() -> int:
     args = parser.parse_args()
 
     path = Path(args.path).expanduser()
+    if path.is_symlink():
+        print(f"claude-read-symbol: refusing symlink input: {args.path}", file=sys.stderr)
+        return 2
     if not path.is_file():
         print(f"claude-read-symbol: not a file: {args.path}", file=sys.stderr)
         return 2
