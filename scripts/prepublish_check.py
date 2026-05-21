@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 import py_compile
+import re
 import shutil
 import stat
 import subprocess
@@ -24,6 +25,8 @@ PLUGIN_DIR = ROOT / "plugins" / "claude-token-optimizer"
 PLUGIN_BIN = PLUGIN_DIR / "bin"
 PLUGIN_MANIFEST = PLUGIN_DIR / ".claude-plugin" / "plugin.json"
 MARKETPLACE_MANIFEST = ROOT / ".claude-plugin" / "marketplace.json"
+SKILLS_DIR = PLUGIN_DIR / "skills"
+BASH_ALLOWED_TOOL_RE = re.compile(r"Bash\(([^\s)]+)")
 
 IMPLEMENTATION_PAIRS = (
     ("aux_ai_delegate.py", "claude-token-delegate"),
@@ -116,6 +119,24 @@ def check_manifest() -> None:
         fail(f"marketplace/plugin license mismatch: {entry.get('license')} != {plugin['license']}")
 
 
+def check_skill_allowed_tool_commands() -> None:
+    if not SKILLS_DIR.is_dir():
+        fail(f"missing plugin skills directory: {SKILLS_DIR}")
+    available = {path.name for path in PLUGIN_BIN.iterdir() if path.is_file()}
+    for skill in sorted(SKILLS_DIR.glob("*/SKILL.md")):
+        try:
+            text = skill.read_text(encoding="utf-8")
+        except OSError as exc:
+            fail(f"could not read skill metadata: {skill}: {exc}")
+        for line in text.splitlines():
+            if not line.startswith("allowed-tools:"):
+                continue
+            for command in BASH_ALLOWED_TOOL_RE.findall(line):
+                if command not in available:
+                    rel = skill.relative_to(PLUGIN_DIR)
+                    fail(f"skill allowed-tools references missing plugin bin command: {rel}: {command}")
+
+
 def check_bin_copies() -> None:
     for kit_name, bin_name in IMPLEMENTATION_PAIRS:
         kit = KIT_DIR / kit_name
@@ -182,6 +203,7 @@ def main() -> int:
 
     check_manifest()
     check_bin_copies()
+    check_skill_allowed_tool_commands()
     remove_generated_plugin_bin_python_caches()
     check_package_clean()
     check_python_compiles()

@@ -123,6 +123,22 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertFalse(plugin_bin_cache.exists())
         self.assertFalse(stale_pyc.exists())
 
+    def test_prepublish_rejects_missing_skill_allowed_tool_command(self):
+        skill = ROOT / "plugins" / "claude-token-optimizer" / "skills" / "setup" / "SKILL.md"
+        original = skill.read_text(encoding="utf-8")
+        try:
+            skill.write_text(original.replace("Bash(claude-token-setup *)", "Bash(claude-token-missing *)"), encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "prepublish_check.py"), "--skip-tests"],
+                text=True,
+                capture_output=True,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("skill allowed-tools references missing plugin bin command", proc.stdout + proc.stderr)
+            self.assertIn("claude-token-missing", proc.stdout + proc.stderr)
+        finally:
+            skill.write_text(original, encoding="utf-8")
+
     def test_prepublish_rejects_package_symlinks(self):
         link = PLUGIN_DIR / "symlink-artifact"
         try:
