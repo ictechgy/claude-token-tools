@@ -32,6 +32,8 @@ DEFAULT_DELEGATION_DIR = Path(".claude-token-optimizer/delegations")
 PROMPT_ARG_MAX_CHARS = 100_000
 AUTO_PROMPT_MAX_CHARS = 2_000
 PROVIDER_OUTPUT_MAX_CHARS = 1_000_000
+CONTEXT_MAX_CHARS_LIMIT = 1_000_000
+TIMEOUT_SECONDS_MAX = 600
 PROVIDER_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 SENSITIVE_CONTEXT_NAMES = {
@@ -129,6 +131,26 @@ def json_clone(value: Any) -> Any:
 
 def truthy_env(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+def bounded_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    return min(max(number, minimum), maximum)
+
+
+def output_budget(value: Any, default: int = 4000) -> int:
+    return bounded_int(value, default, 1, PROVIDER_OUTPUT_MAX_CHARS)
+
+
+def context_budget(value: Any, default: int = 60000) -> int:
+    return bounded_int(value, default, 1, CONTEXT_MAX_CHARS_LIMIT)
+
+
+def timeout_budget(value: Any, default: int = 180) -> int:
+    return bounded_int(value, default, 1, TIMEOUT_SECONDS_MAX)
 
 
 def find_project_root(start: Path | None = None) -> Path:
@@ -889,9 +911,9 @@ def cmd_enable(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
     if args.max_output_chars is not None:
-        config["max_output_chars"] = args.max_output_chars
+        config["max_output_chars"] = output_budget(args.max_output_chars)
     if args.timeout_seconds is not None:
-        config["timeout_seconds"] = args.timeout_seconds
+        config["timeout_seconds"] = timeout_budget(args.timeout_seconds)
     path = save_config(config)
     print(f"enabled auxiliary AI delegation in {path}")
     print(f"project_root={find_project_root()}")
@@ -972,10 +994,14 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 
 def read_limited_output(path: Path, limit: int) -> tuple[str, bool]:
-    data = path.read_bytes() if path.exists() else b""
-    truncated = len(data) > limit
+    read_limit = output_budget(limit, PROVIDER_OUTPUT_MAX_CHARS)
+    if not path.exists():
+        return "", False
+    with path.open("rb") as f:
+        data = f.read(read_limit + 1)
+    truncated = len(data) > read_limit
     if truncated:
-        data = data[:limit]
+        data = data[:read_limit]
     text = data.decode(errors="replace")
     return text, truncated
 
@@ -987,7 +1013,7 @@ def run_provider(
     timeout_seconds: int,
     output_max_chars: int = PROVIDER_OUTPUT_MAX_CHARS,
 ) -> tuple[int, str, str]:
-    output_limit = max(1, int(output_max_chars))
+    output_limit = output_budget(output_max_chars, PROVIDER_OUTPUT_MAX_CHARS)
     with tempfile.TemporaryDirectory(prefix="claude-token-delegate-") as tmp_raw:
         tmp = Path(tmp_raw)
         work_dir = tmp / "work"
@@ -1153,14 +1179,17 @@ def cmd_ask(args: argparse.Namespace) -> int:
         )
         return 2
 
-    max_output_chars = (
-        args.max_output_chars if args.max_output_chars is not None else int(config.get("max_output_chars") or 4000)
+    max_output_chars = output_budget(
+        args.max_output_chars if args.max_output_chars is not None else config.get("max_output_chars"),
+        4000,
     )
-    context_max_chars = (
-        args.context_max_chars if args.context_max_chars is not None else int(config.get("context_max_chars") or 60000)
+    context_max_chars = context_budget(
+        args.context_max_chars if args.context_max_chars is not None else config.get("context_max_chars"),
+        60000,
     )
-    timeout_seconds = (
-        args.timeout_seconds if args.timeout_seconds is not None else int(config.get("timeout_seconds") or 180)
+    timeout_seconds = timeout_budget(
+        args.timeout_seconds if args.timeout_seconds is not None else config.get("timeout_seconds"),
+        180,
     )
     contexts, context_warnings = read_contexts(args.context or [], context_max_chars, allow_sensitive, allow_outside)
     warnings.extend(context_warnings)
