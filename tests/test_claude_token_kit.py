@@ -1507,6 +1507,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
             block_comment.write_text(
                 "export function target() {\n"
                 "  /*\n"
+                "   * URL-like // text must not hide the block terminator: https://example.test\n"
                 "   * Commented brace must not terminate the slice: }\n"
                 "   */\n"
                 "  return 1;\n"

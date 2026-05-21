@@ -175,7 +175,7 @@ def strip_line_strings(line: str) -> str:
     # Good enough for brace counting in source snippets; avoids most braces in strings.
     line = re.sub(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'', '""', line)
     line = re.sub(r"`(?:\\.|[^`\\])*`", "``", line)
-    return re.sub(r"//.*", "", line)
+    return line
 
 
 def strip_line_for_brace_count(line: str, in_block_comment: bool = False) -> tuple[str, bool]:
