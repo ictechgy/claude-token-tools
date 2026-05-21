@@ -12,6 +12,7 @@ import argparse
 import datetime as _dt
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -134,9 +135,11 @@ def truthy_env(name: str) -> bool:
 
 
 def bounded_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+    if isinstance(value, float) and not math.isfinite(value):
+        return default
     try:
         number = int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
     return min(max(number, minimum), maximum)
 
