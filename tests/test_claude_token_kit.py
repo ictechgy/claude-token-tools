@@ -4250,6 +4250,55 @@ class BenchmarkRunnerTests(unittest.TestCase):
         self.assertEqual(tokens["cache_creation"], 50)
         self.assertAlmostEqual(cost, 0.05, places=6)
 
+    def test_collect_usage_skips_nonfinite_negative_and_huge_metrics(self):
+        """Claude JSON 의 비정상 metric 은 CSV 에 NaN/Infinity/거대값으로 전파되면 안 된다."""
+        module = load_module_from_path(KIT_DIR / "benchmark_runner.py", "_bench_runner_test_usage_sanitizer")
+        payload = {
+            "usage": {
+                "input_tokens": float("nan"),
+                "output_tokens": -1,
+                "cache_read_input_tokens": 10**30,
+                "cache_creation_input_tokens": False,
+            },
+            "total_cost_usd": float("inf"),
+            "messages": [
+                {
+                    "usage": {
+                        "input_tokens": 7,
+                        "output_tokens": 3,
+                        "cache_read_input_tokens": 2,
+                        "cache_creation_input_tokens": 1,
+                    },
+                    "cost_usd": 0.25,
+                }
+            ],
+        }
+        tokens, cost = module.collect_usage(payload)
+        self.assertEqual(tokens["input_tokens"], 7)
+        self.assertEqual(tokens["output_tokens"], 3)
+        self.assertEqual(tokens["cache_read"], 2)
+        self.assertEqual(tokens["cache_creation"], 1)
+        self.assertAlmostEqual(cost, 0.25, places=6)
+
+    def test_collect_usage_leaves_missing_or_all_invalid_metrics_zero(self):
+        """모든 metric 후보가 비정상이면 safe zero 로 남겨 CSV 직렬화를 안정화한다."""
+        module = load_module_from_path(KIT_DIR / "benchmark_runner.py", "_bench_runner_test_usage_zero")
+        payload = {
+            "usage": {
+                "input_tokens": True,
+                "output_tokens": float("-inf"),
+            },
+            "cost_usd": -5,
+        }
+        tokens, cost = module.collect_usage(payload)
+        self.assertEqual(tokens, {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read": 0,
+            "cache_creation": 0,
+        })
+        self.assertEqual(cost, 0.0)
+
 
 class StatuslineMergedWrapperTests(unittest.TestCase):
     """결합 wrapper 의 4 분기 출력 시나리오 검증.

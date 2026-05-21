@@ -88,6 +88,8 @@ USAGE_KEY_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("cache_creation", ("cache_creation_input_tokens", "cacheCreation")),
 )
 COST_KEYS = ("total_cost_usd", "cost_usd", "costUSD")
+MAX_USAGE_TOKEN_COUNT = 10**12
+MAX_USAGE_COST_USD = 10**9
 
 
 # 재현성 우선: fixture 에 명시되지 않은 필드는 argv 로 전달하지 않는다.
@@ -154,6 +156,32 @@ def parse_string_list(value: Any, *, field: str, owner: str) -> list[str]:
             raise SystemExit(f"{owner} {field}[{index}] must be non-empty")
         items.append(item)
     return items
+
+
+def normalize_usage_token(value: Any) -> int | None:
+    """Return a safe non-negative token count, or None for invalid metrics."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        numeric = float(value)
+    except (OverflowError, ValueError):
+        return None
+    if not math.isfinite(numeric) or numeric < 0 or numeric > MAX_USAGE_TOKEN_COUNT:
+        return None
+    return int(numeric)
+
+
+def normalize_usage_cost(value: Any) -> float | None:
+    """Return a safe non-negative cost value, or None for invalid metrics."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        numeric = float(value)
+    except (OverflowError, ValueError):
+        return None
+    if not math.isfinite(numeric) or numeric < 0 or numeric > MAX_USAGE_COST_USD:
+        return None
+    return numeric
 
 
 def parse_tasks(path: Path) -> list[TaskFixture]:
@@ -233,20 +261,16 @@ def collect_usage(payload: Any) -> tuple[dict[str, int], float]:
                 if seen_token[bucket]:
                     continue
                 for key in keys:
-                    val = cur.get(key)
-                    if isinstance(val, bool):
-                        continue
-                    if isinstance(val, (int, float)):
-                        tokens[bucket] = int(val)
+                    token_count = normalize_usage_token(cur.get(key))
+                    if token_count is not None:
+                        tokens[bucket] = token_count
                         seen_token[bucket] = True
                         break
             if not seen_cost:
                 for key in COST_KEYS:
-                    val = cur.get(key)
-                    if isinstance(val, bool):
-                        continue
-                    if isinstance(val, (int, float)):
-                        cost = float(val)
+                    cost_value = normalize_usage_cost(cur.get(key))
+                    if cost_value is not None:
+                        cost = cost_value
                         seen_cost = True
                         break
             queue.extend(cur.values())
