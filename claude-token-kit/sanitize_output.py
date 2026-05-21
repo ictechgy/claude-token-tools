@@ -182,10 +182,61 @@ def redact_secret_assignments(line: str) -> tuple[str, bool]:
     return line, redacted
 
 
+MULTILINE_SECRET_ASSIGNMENT_RE = re.compile(
+    rf"(?i)(?:^|[\s;{{\[,])(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:export\s+)?"
+    rf"[\"']?(?:{SECRET_KEY})[\"']?\s*[:=]\s*(?P<quote>[\"'])"
+)
+
+
+def find_unescaped_quote_end(text: str, quote: str, start: int = 0) -> int | None:
+    """Return the index after the first unescaped quote delimiter, if present."""
+    escaped = False
+    for index, char in enumerate(text[start:], start=start):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if char == quote:
+            return index + 1
+    return None
+
+
+def has_unescaped_quote(text: str, quote: str, start: int = 0) -> bool:
+    """Return True when text contains an unescaped quote delimiter."""
+    return find_unescaped_quote_end(text, quote, start) is not None
+
+
+def detect_multiline_secret_assignment(line: str) -> str | None:
+    """Return the quote delimiter when any secret assignment starts a multiline value."""
+    for marker in MULTILINE_SECRET_ASSIGNMENT_RE.finditer(line):
+        quote = marker.group("quote")
+        if not has_unescaped_quote(line, quote, marker.end("quote")):
+            return quote
+    return None
+
+
+def private_key_state_after_line(line: str) -> bool | None:
+    """Return updated private-key state for a line, or None when no marker appears."""
+    if PRIVATE_KEY_BEGIN_RE.search(line):
+        return not bool(PRIVATE_KEY_END_RE.search(line))
+    if PRIVATE_KEY_END_RE.search(line):
+        return False
+    return None
+
+
+def secret_or_private_key_redaction_label(line: str) -> str:
+    if PRIVATE_KEY_BEGIN_RE.search(line) or PRIVATE_KEY_END_RE.search(line):
+        return "[REDACTED PRIVATE KEY BLOCK]\n"
+    return "[REDACTED MULTILINE SECRET]\n"
+
+
 class LineSanitizer:
     def __init__(self, *, show_paths: bool = False) -> None:
         self.show_paths = show_paths
         self.in_private_key_block = False
+        self.multiline_secret_quote: str | None = None
         self.redactions = 0
 
     def sanitize(self, raw_line: str) -> tuple[str, bool]:
@@ -196,11 +247,35 @@ class LineSanitizer:
         if stripped_for_key.startswith(('+', '-')):
             diff_prefix = stripped_for_key[0]
 
+        if self.multiline_secret_quote is not None:
+            redacted = True
+            label = "[REDACTED PRIVATE KEY BLOCK]\n" if (
+                self.in_private_key_block or PRIVATE_KEY_BEGIN_RE.search(line) or PRIVATE_KEY_END_RE.search(line)
+            ) else "[REDACTED MULTILINE SECRET]\n"
+            key_state = private_key_state_after_line(line)
+            if key_state is not None:
+                self.in_private_key_block = key_state
+            closing_index = find_unescaped_quote_end(line, self.multiline_secret_quote)
+            if closing_index is not None:
+                self.multiline_secret_quote = detect_multiline_secret_assignment(line[closing_index:])
+            return self._finish(diff_prefix + label, redacted)
+
         if self.in_private_key_block:
             redacted = True
+            multiline_quote = detect_multiline_secret_assignment(line)
+            if multiline_quote is not None:
+                self.multiline_secret_quote = multiline_quote
             if PRIVATE_KEY_END_RE.search(line):
                 self.in_private_key_block = False
             return self._finish(diff_prefix + "[REDACTED PRIVATE KEY BLOCK]\n", redacted)
+
+        multiline_quote = detect_multiline_secret_assignment(line)
+        if multiline_quote is not None:
+            self.multiline_secret_quote = multiline_quote
+            key_state = private_key_state_after_line(line)
+            if key_state is not None:
+                self.in_private_key_block = key_state
+            return self._finish(diff_prefix + secret_or_private_key_redaction_label(line), True)
 
         if PRIVATE_KEY_BEGIN_RE.search(line):
             redacted = True
