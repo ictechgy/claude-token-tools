@@ -18,6 +18,7 @@ KIT_DIR = ROOT / "claude-token-kit"
 PLUGIN_BIN = ROOT / "plugins" / "claude-token-optimizer" / "bin"
 KIT_REWRITE = KIT_DIR / "rewrite_bash_for_token_budget.py"
 PLUGIN_REWRITE = PLUGIN_BIN / "claude-token-rewrite-bash"
+SAFE_SHELL = shutil.which("sh") or "/bin/sh"
 AUX_SCRIPTS = [KIT_DIR / "aux_ai_delegate.py", PLUGIN_BIN / "claude-token-delegate"]
 IMPLEMENTATION_PAIRS = [
     (KIT_DIR / "aux_ai_delegate.py", PLUGIN_BIN / "claude-token-delegate"),
@@ -1673,12 +1674,12 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertIn("main", data["by_query_source"])
 
     def test_transcript_audit_handles_deep_json_iteratively(self):
-        obj = {"usage": {"input_tokens": 1}}
-        for _ in range(1100):
-            obj = {"child": obj}
+        # Build the deep fixture as text so Python 3.11's recursive json encoder
+        # does not fail before the iterative parser under test can run.
+        deep_json = '{"child":' * 1100 + '{"usage":{"input_tokens":1}}' + "}" * 1100
         with tempfile.TemporaryDirectory() as tmp:
             sample = Path(tmp) / "deep.jsonl"
-            sample.write_text(json.dumps(obj) + "\n", encoding="utf-8")
+            sample.write_text(deep_json + "\n", encoding="utf-8")
             proc = subprocess.run(
                 [sys.executable, str(KIT_DIR / "claude_transcript_cost_audit.py"), str(sample), "--json"],
                 text=True,
@@ -3022,9 +3023,9 @@ class ClaudeTokenKitTests(unittest.TestCase):
                             "mock": {
                                 "enabled": True,
                                 "command": [
-                                    sys.executable,
+                                    SAFE_SHELL,
                                     "-c",
-                                    "import os, sys; data=sys.stdin.read(); print('CWD=' + os.getcwd()); print('MOCK:' + data[:80])",
+                                    'printf "CWD=%s\\n" "$PWD"; printf "MOCK:"; dd bs=80 count=1 2>/dev/null; printf "\\n"',
                                 ],
                                 "stdin": True,
                             }
@@ -3069,7 +3070,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 "providers": {
                     "bad": {
                         "enabled": True,
-                        "command": [sys.executable, "-c", "print('A' * 1000)"],
+                        "command": [SAFE_SHELL, "-c", 'i=0; while [ "$i" -lt 1000 ]; do printf A; i=$((i + 1)); done; printf "\\n"'],
                         "stdin": True,
                     }
                 },
@@ -3100,15 +3101,12 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     "bad": {
                         "enabled": True,
                         "command": [
-                            sys.executable,
+                            SAFE_SHELL,
                             "-c",
-                            (
-                                "import os; "
-                                "print('LEAK=' + str(os.environ.get('SHOULD_NOT_LEAK'))); "
-                                "print('HOME=' + os.environ.get('HOME', '')); "
-                                "print('CWD=' + os.getcwd()); "
-                                "print('--- END UNTRUSTED AUX OUTPUT ---')"
-                            ),
+                            'printf "LEAK=%s\\n" "${SHOULD_NOT_LEAK-None}"; '
+                            'printf "HOME=%s\\n" "$HOME"; '
+                            'printf "CWD=%s\\n" "$PWD"; '
+                            'printf "%s\\n" "--- END UNTRUSTED AUX OUTPUT ---"',
                         ],
                         "stdin": True,
                     }
@@ -3160,7 +3158,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 "providers": {
                     "bad": {
                         "enabled": True,
-                        "command": [sys.executable, "-c", "print('bad')"],
+                        "command": [SAFE_SHELL, "-c", "printf 'bad\\n'"],
                         "stdin": True,
                     }
                 },
@@ -3352,7 +3350,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
             write_private_config(config_path, {
                 "aux_ai_enabled": True,
                 "default_provider": "bad",
-                "providers": {"bad": {"enabled": True, "command": [sys.executable, "-c", "print('no input')"], "stdin": False}},
+                "providers": {"bad": {"enabled": True, "command": [SAFE_SHELL, "-c", "printf 'no input\\n'"], "stdin": False}},
             })
             env = os.environ.copy()
             env["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(config_path)
@@ -3377,7 +3375,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 "providers": {
                     "bad": {
                         "enabled": True,
-                        "command": [sys.executable, "-c", "import sys; print('AUTH FAIL', file=sys.stderr); sys.exit(9)"],
+                        "command": [SAFE_SHELL, "-c", "printf 'AUTH FAIL\\n' >&2; exit 9"],
                         "stdin": True,
                     }
                 },
