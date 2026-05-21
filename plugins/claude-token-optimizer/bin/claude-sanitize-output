@@ -183,7 +183,7 @@ def redact_secret_assignments(line: str) -> tuple[str, bool]:
 
 
 MULTILINE_SECRET_ASSIGNMENT_RE = re.compile(
-    rf"(?i)(?:^|[\s{{\[,])(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:export\s+)?"
+    rf"(?i)(?:^|[\s;{{\[,])(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:export\s+)?"
     rf"[\"']?(?:{SECRET_KEY})[\"']?\s*[:=]\s*(?P<quote>[\"'])"
 )
 
