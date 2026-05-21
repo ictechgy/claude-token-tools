@@ -3572,7 +3572,8 @@ class BenchmarkRunnerTests(unittest.TestCase):
                         text=True, capture_output=True, check=True,
                     )
                     self.assertIn("ok tokens=980", proc.stdout)  # 100+30+800+50
-                    rows = list(csv.DictReader(csv_path.open(encoding="utf-8")))
+                    with csv_path.open(encoding="utf-8") as f:
+                        rows = list(csv.DictReader(f))
                     self.assertEqual(len(rows), 1)
                     row = rows[0]
                     self.assertEqual(row["input_tokens"], "100")
@@ -3604,7 +3605,8 @@ class BenchmarkRunnerTests(unittest.TestCase):
                  "--project-root", str(root)],
                 text=True, capture_output=True, check=True,
             )
-            row = next(csv.DictReader(csv_path.open(encoding="utf-8")))
+            with csv_path.open(encoding="utf-8") as f:
+                row = next(csv.DictReader(f))
             self.assertEqual(row["success"], "false")
             self.assertIn("exit=1", row["notes"])
 
@@ -3637,7 +3639,8 @@ class BenchmarkRunnerTests(unittest.TestCase):
             second = subprocess.run(common + ["--resume"], text=True, capture_output=True, check=True)
             self.assertIn("skip t01/baseline", second.stdout)
             self.assertIn("run t02/baseline", second.stdout)
-            rows = list(csv.DictReader(csv_path.open(encoding="utf-8")))
+            with csv_path.open(encoding="utf-8") as f:
+                rows = list(csv.DictReader(f))
             self.assertEqual(sorted((r["task_id"], r["variant"]) for r in rows),
                              [("t01", "baseline"), ("t02", "baseline")])
 
@@ -3682,7 +3685,8 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     )
                     self.assertEqual(sentinel.read_text(encoding="utf-8"), "safe",
                                      "shell metacharacter 가 fixture 에 들어와도 실행되면 안 된다")
-                    row = next(csv.DictReader(csv_path.open(encoding="utf-8")))
+                    with csv_path.open(encoding="utf-8") as f:
+                        row = next(csv.DictReader(f))
                     self.assertEqual(row["success"], "false",
                                      f"shell metachar 가 있는 success_command 는 success=false 로 기록되어야 한다 ({cmd})")
                     self.assertIn("shell-composition", row["notes"])
@@ -3764,7 +3768,8 @@ class BenchmarkRunnerTests(unittest.TestCase):
                  "--project-root", str(project)],
                 text=True, capture_output=True, check=True,
             )
-            row = next(csv.DictReader(csv_path.open(encoding="utf-8")))
+            with csv_path.open(encoding="utf-8") as f:
+                row = next(csv.DictReader(f))
             self.assertEqual(row["success"], "false")
             self.assertIn("escapes project_root", row["notes"])
 
