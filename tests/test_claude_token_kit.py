@@ -575,6 +575,31 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertNotIn("outer-secret-still-active", proc.stdout)
                 self.assertNotIn("outer-close", proc.stdout)
 
+    def test_sanitize_output_detects_new_multiline_secret_after_active_close_on_same_line(self):
+        raw = (
+            'API_TOKEN="outer-secret-start\n'
+            'outer-close" SECOND_TOKEN="second-secret-start\n'
+            "second-secret-continuation\n"
+            'second-close"\n'
+            "SAFE_VALUE=visible\n"
+        )
+        for script in SANITIZE_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [sys.executable, str(script)],
+                    input=raw,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertIn("[REDACTED MULTILINE SECRET]", proc.stdout)
+                self.assertIn("SAFE_VALUE=visible", proc.stdout)
+                self.assertNotIn("outer-secret-start", proc.stdout)
+                self.assertNotIn("outer-close", proc.stdout)
+                self.assertNotIn("second-secret-start", proc.stdout)
+                self.assertNotIn("second-secret-continuation", proc.stdout)
+                self.assertNotIn("second-close", proc.stdout)
+
     def test_sanitize_output_multiline_secret_with_private_key_marker_stays_redacted(self):
         raw = (
             'API_TOKEN="-----BEGIN OPENSSH PRIVATE KEY-----\n'

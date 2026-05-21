@@ -188,10 +188,10 @@ MULTILINE_SECRET_ASSIGNMENT_RE = re.compile(
 )
 
 
-def has_unescaped_quote(text: str, quote: str, start: int = 0) -> bool:
-    """Return True when text contains an unescaped quote delimiter."""
+def find_unescaped_quote_end(text: str, quote: str, start: int = 0) -> int | None:
+    """Return the index after the first unescaped quote delimiter, if present."""
     escaped = False
-    for char in text[start:]:
+    for index, char in enumerate(text[start:], start=start):
         if escaped:
             escaped = False
             continue
@@ -199,8 +199,13 @@ def has_unescaped_quote(text: str, quote: str, start: int = 0) -> bool:
             escaped = True
             continue
         if char == quote:
-            return True
-    return False
+            return index + 1
+    return None
+
+
+def has_unescaped_quote(text: str, quote: str, start: int = 0) -> bool:
+    """Return True when text contains an unescaped quote delimiter."""
+    return find_unescaped_quote_end(text, quote, start) is not None
 
 
 def detect_multiline_secret_assignment(line: str) -> str | None:
@@ -250,8 +255,9 @@ class LineSanitizer:
             key_state = private_key_state_after_line(line)
             if key_state is not None:
                 self.in_private_key_block = key_state
-            if has_unescaped_quote(line, self.multiline_secret_quote):
-                self.multiline_secret_quote = None
+            closing_index = find_unescaped_quote_end(line, self.multiline_secret_quote)
+            if closing_index is not None:
+                self.multiline_secret_quote = detect_multiline_secret_assignment(line[closing_index:])
             return self._finish(diff_prefix + label, redacted)
 
         if self.in_private_key_block:
